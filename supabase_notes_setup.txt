@@ -1,0 +1,60 @@
+create table if not exists rucio.notes (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  book_id uuid not null references rucio.books(id) on delete cascade,
+  cfi_range text not null,
+  selected_text text,
+  content text not null,
+  color text not null default '#F2A65A',
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now())
+);
+
+create index if not exists notes_user_book_updated_idx
+  on rucio.notes (user_id, book_id, updated_at desc);
+
+create index if not exists notes_user_updated_idx
+  on rucio.notes (user_id, updated_at desc);
+
+alter table rucio.notes enable row level security;
+
+drop policy if exists "notes_select_own" on rucio.notes;
+drop policy if exists "notes_insert_own" on rucio.notes;
+drop policy if exists "notes_update_own" on rucio.notes;
+drop policy if exists "notes_delete_own" on rucio.notes;
+
+create policy "notes_select_own"
+on rucio.notes for select
+using (auth.uid() = user_id);
+
+create policy "notes_insert_own"
+on rucio.notes for insert
+with check (auth.uid() = user_id);
+
+create policy "notes_update_own"
+on rucio.notes for update
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
+
+create policy "notes_delete_own"
+on rucio.notes for delete
+using (auth.uid() = user_id);
+
+grant select, insert, update, delete on rucio.notes to authenticated;
+
+create or replace function rucio.set_notes_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = timezone('utc', now());
+  return new;
+end;
+$$;
+
+drop trigger if exists notes_set_updated_at on rucio.notes;
+
+create trigger notes_set_updated_at
+before update on rucio.notes
+for each row
+execute function rucio.set_notes_updated_at();

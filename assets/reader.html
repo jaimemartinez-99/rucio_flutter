@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #1a1a2e; color: #fff; }
+    #viewer { width: 100vw; height: 100vh; }
+    #rucio-styles { display: none; }
+    #selection-bar { position: fixed; bottom: max(16px, env(safe-area-inset-bottom)); left: 12px; right: 12px; z-index: 999; display: none; flex-wrap: wrap; gap: 8px; max-height: 45dvh; overflow-y: auto; background: rgba(26,24,39,0.98); padding: 10px; border: 1px solid #252336; border-radius: 14px; box-shadow: 0 10px 30px rgba(0,0,0,0.35); }
+    #selection-bar button { flex: 1 1 calc(50% - 4px); min-height: 42px; background: #252336; color: #e8e4f0; border: none; padding: 8px 10px; border-radius: 8px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+    #selection-bar .selection-close { background: transparent; color: #a8a1b5; }
+    @media (min-width: 600px) { #selection-bar button { flex-basis: calc(20% - 7px); } }
+    #selection-bar button.accent { background: #f2a65a; color: #0f0e17; }
+  </style>
+</head>
+<body>
+  <div id="viewer"></div>
+  <div id="selection-bar">
+    <button onclick="highlightSelection()">Highlight</button>
+    <button class="accent" onclick="addNoteSelection()">Añadir nota</button>
+    <button onclick="askClaudeSelection()">Ask Claude</button>
+    <button onclick="translateSelection()">Traducir</button>
+    <button onclick="saveToVocablingoSelection()">Vocablingo</button>
+    <button class="selection-close" onclick="dismissSelection()">Cerrar</button>
+  </div>
+  <script>{{{JSZIP_SOURCE}}}</script>
+  <script>{{{EPUBJS_SOURCE}}}</script>
+  <script>
+    var book, rendition;
+    var readerReady = false;
+    var readerCss = '';
+    var epubData = {{{EPUB_DATA_JSON}}};
+    var pageTurnInProgress = false;
+    var lastPageTurnAt = 0;
+
+    function postToFlutter(channel, message) {
+      if (window.chrome && window.chrome.webview) {
+        window.chrome.webview.postMessage({ channel: channel, message: message });
+      } else if (window[channel] && window[channel].postMessage) {
+        window[channel].postMessage(message);
+      }
+    }
+
+    function base64ToArrayBuffer(base64) {
+      var binary = atob(base64);
+      var bytes = new Uint8Array(binary.length);
+      for (var i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes.buffer;
+    }
+
+    function showError(msg) {
+      document.body.innerHTML = '<div style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;font-family:sans-serif;background:rgba(0,0,0,0.95);padding:24px;border-radius:8px;max-width:80%;z-index:999;color:#fff"><p style="font-size:16px;margin-bottom:8px">' + msg + '</p></div>';
+      postToFlutter('ReaderError', msg);
+    }
+
+    try {
+      book = ePub(base64ToArrayBuffer(epubData), { openAs: 'binary' });
+      rendition = book.renderTo(document.getElementById("viewer"), { width: "100%", height: "100%", flow: "paginated", spread: "none" });
+      if (!rendition) { showError('renderTo returned undefined'); }
+      rendition.hooks.content.register(function(contents) {
+        applyContentStyles(contents);
+        injectTouchHandlers(contents);
+      });
+
+      var displayPromise = book.opened.then(function() {
+        if (book.locations) {
+          return book.locations.generate(800).catch(function() {});
+        }
+      }).then(function() {
+        return rendition.display();
+      }).then(function() {
+        readerReady = true;
+        postToFlutter('ReaderReady', '');
+      }).catch(function(err) {
+        showError('Book load failed: ' + (err.message || err));
+      });
+
+      book.loaded.navigation.then(function() {
+        postToFlutter('Toc', JSON.stringify(book.navigation.toc || []));
+      }).catch(function() {
+        postToFlutter('Toc', '[]');
+      });
+
+      rendition.on("relocated", function(loc) {
+        if (!loc || !loc.start) return;
+        var cfi = loc.start.cfi;
+        var pct = book.locations ? book.locations.percentageFromCfi(cfi) : 0;
+        postToFlutter('Relocated', JSON.stringify({ cfi: cfi, href: loc.start.href || '', percentage: Math.round(pct * 10000) / 100 }));
+      });
+
+      rendition.on("selected", function(cfiRange, contents) {
+        var selection = contents.window.getSelection();
+        var text = selection.toString();
+        if (!text) return;
+        var range = selection.getRangeAt(0);
+        var rect = range.getBoundingClientRect();
+        window._selectedCfiRange = cfiRange;
+        window._selectedText = text;
+        var bar = document.getElementById('selection-bar');
+        bar.style.display = 'flex';
+        postToFlutter('Selection', JSON.stringify({ cfiRange: cfiRange, text: text, x: rect.left, y: rect.top, width: rect.width, height: rect.height }));
+      });
+
+      document.addEventListener('click', function(e) {
+        var bar = document.getElementById('selection-bar');
+        if (bar.style.display === 'flex' && !bar.contains(e.target)) {
+          dismissSelection();
+        }
+      });
+    } catch(e) {
+      showError('Init error: ' + (e.message || e));
+    }
+
+    setTimeout(function() {
+      if (!readerReady) showError('The book did not finish loading. Check your connection and try again.');
+    }, 20000);
+
+    function turnPage(direction) {
+      var now = Date.now();
+      if (!rendition || pageTurnInProgress || now - lastPageTurnAt < 300) return;
+      pageTurnInProgress = true;
+      lastPageTurnAt = now;
+      try {
+        Promise.resolve(rendition[direction]())
+          .catch(function() {})
+          .then(function() {
+            setTimeout(function() {
+              pageTurnInProgress = false;
+            }, 300);
+          });
+      } catch (e) {
+        pageTurnInProgress = false;
+      }
+    }
+    function prevPage() { turnPage('prev'); }
+    function nextPage() { turnPage('next'); }
+    function goToCfi(cfi) { return goTo(cfi); }
+    function goTo(target) {
+      if (!rendition || !target) return Promise.resolve();
+      return rendition.display(target).catch(function(err) {
+        postToFlutter('ReaderError', 'Unable to open chapter: ' + (err.message || err));
+      });
+    }
+    function goToSearchResult(cfi) {
+      if (!rendition || !cfi) return;
+      displayAfterLayout(cfi).then(function() {
+        try {
+          rendition.annotations.remove(cfi, 'highlight');
+          rendition.annotations.add('highlight', cfi, {}, null, null, {
+            'background-color': '#f2a65a', 'opacity': '0.6'
+          });
+          setTimeout(function() {
+            try { rendition.annotations.remove(cfi, 'highlight'); } catch (err) {}
+          }, 4500);
+        } catch (err) {}
+      }).catch(function(err) {
+        postToFlutter('ReaderError', 'Unable to open search result: ' + (err.message || err));
+      });
+    }
+    function displayAfterLayout(target) {
+      return rendition.display(target).then(function() {
+        return new Promise(function(resolve, reject) {
+          requestAnimationFrame(function() {
+            rendition.display(target).then(resolve).catch(reject);
+          });
+        });
+      });
+    }
+    function setStyles(css) {
+      readerCss = css;
+      var el = document.getElementById("rucio-styles");
+      if (!el) { el = document.createElement("style"); el.id = "rucio-styles"; document.head.appendChild(el); }
+      el.textContent = css;
+      if (rendition) {
+        rendition.getContents().forEach(function(contents) {
+          applyContentStyles(contents);
+        });
+      }
+    }
+    function setPageLayout(layout) {
+      if (!rendition) return;
+      var location = rendition.currentLocation ? rendition.currentLocation() : null;
+      var cfi = location && location.start ? location.start.cfi : null;
+      rendition.spread(layout === 'two' ? 'always' : 'none');
+      if (cfi) {
+        return rendition.display(cfi).catch(function(err) {
+          postToFlutter('ReaderError', 'Unable to change page layout: ' + (err.message || err));
+        });
+      }
+      return Promise.resolve();
+    }
+    function applyContentStyles(contents) {
+      if (!readerCss || !contents || !contents.document) return;
+      var doc = contents.document;
+      var viewport = doc.querySelector('meta[name="viewport"]');
+      if (!viewport) {
+        viewport = doc.createElement('meta');
+        viewport.name = 'viewport';
+        (doc.head || doc.documentElement).appendChild(viewport);
+      }
+      viewport.content = 'width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes';
+      var el = doc.getElementById("rucio-styles");
+      if (!el) {
+        el = doc.createElement("style");
+        el.id = "rucio-styles";
+        (doc.head || doc.documentElement).appendChild(el);
+      }
+      el.textContent = readerCss;
+      contents.expand();
+    }
+    function injectTouchHandlers(contents) {
+      var doc = contents.document;
+      if (doc._rucioTouch) return;
+      doc._rucioTouch = true;
+      var win = contents.window;
+      var startX, startY, startT, isPinching = false;
+      var ignoreClickUntil = 0;
+
+      function hasSelection() {
+        return win.getSelection && win.getSelection().toString().trim().length > 0;
+      }
+
+      function handlePageTap(x) {
+        if (hasSelection()) return;
+        var pageWidth = win.innerWidth;
+        var pageX = x;
+        try {
+          var mgr = rendition && rendition.manager;
+          if (mgr && mgr.container && mgr.layout && mgr.layout.delta) {
+            pageWidth = mgr.layout.delta;
+            pageX = x - mgr.container.scrollLeft;
+          }
+        } catch (err) {}
+        if (pageX < pageWidth * 0.25) { prevPage(); }
+        else if (pageX < pageWidth * 0.75) { toggleUI(); }
+        else { nextPage(); }
+      }
+
+      doc.addEventListener('touchstart', function(e) {
+        isPinching = e.touches.length > 1;
+        if (isPinching) return;
+        startX = e.touches[0].clientX;
+        startY = e.touches[0].clientY;
+        startT = Date.now();
+      }, { passive: true });
+      doc.addEventListener('touchmove', function(e) {
+        if (e.touches.length > 1) isPinching = true;
+      }, { passive: true });
+      doc.addEventListener('touchend', function(e) {
+        if (isPinching) {
+          isPinching = false;
+          return;
+        }
+        var dx = Math.abs(e.changedTouches[0].clientX - startX);
+        var dy = Math.abs(e.changedTouches[0].clientY - startY);
+        var dt = Date.now() - startT;
+        if (dt > 300 || dx > 10 || dy > 10) return;
+        ignoreClickUntil = Date.now() + 500;
+        handlePageTap(startX);
+      }, { passive: true });
+      doc.addEventListener('click', function(e) {
+        if (Date.now() < ignoreClickUntil || hasSelection()) return;
+        if (e.target.closest && e.target.closest('a[href]')) return;
+        handlePageTap(e.clientX);
+      });
+      doc.addEventListener('keydown', function(e) {
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault();
+          prevPage();
+        } else if (e.key === 'ArrowRight') {
+          e.preventDefault();
+          nextPage();
+        }
+      });
+    }
+    function toggleUI() { postToFlutter('ToggleUI', ''); }
+    function searchBook(query) {
+      if (!book || !query || query.trim().length < 2) {
+        postToFlutter('SearchResults', JSON.stringify([]));
+        return;
+      }
+      var q = query.toLowerCase().trim();
+      var results = [];
+      var promises = [];
+      var sections = book.spine && book.spine.spineItems;
+      if (!sections || !sections.length) {
+        postToFlutter('SearchResults', JSON.stringify([]));
+        return;
+      }
+      for (var i = 0; i < sections.length; i++) {
+        var section = sections[i];
+        (function(section) {
+          promises.push(
+            section.load(book.load.bind(book)).then(function() {
+              var matches = section.find(q);
+              matches.forEach(function(match) {
+                results.push({
+                  cfi: match.cfi,
+                  href: section.href,
+                  context: match.excerpt || '',
+                  query: query.trim()
+                });
+              });
+            }).catch(function() {}).then(function() {
+              section.unload();
+            })
+          );
+        })(section);
+      }
+      Promise.all(promises).then(function() {
+        results.sort(function(a, b) { return a.cfi.localeCompare(b.cfi); });
+        postToFlutter('SearchResults', JSON.stringify(results));
+      });
+    }
+    function searchPage(query) {
+      if (typeof android !== 'undefined' && android.findText) {
+        android.findText(query);
+      } else {
+        try { window.find(query, false, false, true, false, false, false); } catch(e) {}
+      }
+    }
+    function sendSelectionAction(action) {
+      var payload = {
+        action: action,
+        cfiRange: window._selectedCfiRange,
+        text: window._selectedText
+      };
+      dismissSelection();
+      postToFlutter('SelectionAction', JSON.stringify(payload));
+    }
+    function highlightSelection() { sendSelectionAction('highlight'); }
+    function addNoteSelection() { sendSelectionAction('note'); }
+    function askClaudeSelection() { sendSelectionAction('claude'); }
+    function translateSelection() { sendSelectionAction('translate'); }
+    function saveToVocablingoSelection() { sendSelectionAction('vocablingo'); }
+    function dismissSelection() {
+      document.getElementById('selection-bar').style.display = 'none';
+      if (rendition) {
+        try {
+          rendition.getContents().forEach(function(contents) {
+            var sel = contents.window.getSelection();
+            if (sel) sel.removeAllRanges();
+            if (contents.document.activeElement) contents.document.activeElement.blur();
+          });
+        } catch(e) {}
+      }
+      if (window.getSelection) { window.getSelection().removeAllRanges(); }
+      window._selectedCfiRange = null;
+      window._selectedText = null;
+      setTimeout(function() {
+        if (!rendition) return;
+        try {
+          rendition.getContents().forEach(function(contents) {
+            var sel = contents.window.getSelection();
+            if (sel) sel.removeAllRanges();
+          });
+        } catch(e) {}
+      }, 0);
+    }
+    function renderHighlights(highlights) {
+      if (!rendition) return;
+      highlights.forEach(function(h) {
+        try {
+          rendition.annotations.add("highlight", h.cfi_range, {}, null, null, {
+            "background-color": h.color, "opacity": "0.5"
+          });
+        } catch(e) {}
+      });
+    }
+    function renderNotes(notes) {
+      if (!rendition) return;
+      notes.forEach(function(note) {
+        try {
+          rendition.annotations.add(
+            'underline',
+            note.cfi_range,
+            {},
+            function(event) {
+              if (event) {
+                if (event.preventDefault) event.preventDefault();
+                if (event.stopPropagation) event.stopPropagation();
+              }
+              postToFlutter('NoteTapped', note.id);
+            },
+            'rucio-note-underline',
+            {
+              'stroke': note.color || '#F2A65A',
+              'stroke-opacity': '1',
+              'stroke-width': '3px'
+            }
+          );
+        } catch(e) {}
+      });
+    }
+  </script>
+</body>
+</html>
