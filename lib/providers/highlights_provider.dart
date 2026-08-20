@@ -106,9 +106,15 @@ class HighlightsNotifier extends StateNotifier<HighlightsState> {
   }
 
   Future<void> deleteHighlight(String highlightId) async {
+    final userId = _userId;
+    if (userId == null) return;
     final db = _ref.read(supabaseClientProvider);
 
-    await db.from('highlights').delete().eq('id', highlightId);
+    await db
+        .from('highlights')
+        .delete()
+        .eq('id', highlightId)
+        .eq('user_id', userId);
     if (bookId == null) {
       await fetchHighlightsWithBooks();
     } else {

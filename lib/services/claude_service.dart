@@ -1,5 +1,4 @@
 import 'package:dio/dio.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 class ClaudeServiceException implements Exception {
   const ClaudeServiceException(this.message);
@@ -13,6 +12,7 @@ class ClaudeServiceException implements Exception {
 class ClaudeService {
   static const _apiUrl = 'https://api.anthropic.com/v1/messages';
   static const _model = 'claude-sonnet-5';
+  static const _apiKey = String.fromEnvironment('CLAUDE_API_KEY');
 
   final Dio _dio;
 
@@ -29,7 +29,7 @@ class ClaudeService {
     String? selectedText, {
     String? readingContext,
   }) async {
-    final apiKey = dotenv.env['CLAUDE_API_KEY']?.trim() ?? '';
+    final apiKey = _apiKey.trim();
     if (apiKey.isEmpty || apiKey.startsWith('<')) {
       throw const ClaudeServiceException(
         'Claude API key is missing from .env.',

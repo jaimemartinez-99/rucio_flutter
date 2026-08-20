@@ -99,6 +99,7 @@ class _WindowsReaderScreenState extends ConsumerState<WindowsReaderScreen> {
       final content = html
           .replaceFirst('{{{JSZIP_SOURCE}}}', jsZip)
           .replaceFirst('{{{EPUBJS_SOURCE}}}', epubJs)
+          .replaceFirst('{{{EPUB_URL_JSON}}}', 'null')
           .replaceFirst('{{{EPUB_DATA_JSON}}}', jsonEncode(base64Encode(epubBytes)));
 
       final controller = WebviewController();

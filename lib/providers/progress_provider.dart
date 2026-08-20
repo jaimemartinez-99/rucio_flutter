@@ -40,6 +40,7 @@ class ProgressNotifier extends StateNotifier<ReadingProgress?> {
   }
 
   void saveProgress(String cfi, double pct) {
+    if (cfi.isEmpty) return;
     _pendingCfi = cfi;
     _pendingPct = pct;
     _debounce?.cancel();
@@ -69,6 +70,9 @@ class ProgressNotifier extends StateNotifier<ReadingProgress?> {
         'percentage': pct.clamp(0, 100),
         'updated_at': DateTime.now().toIso8601String(),
       }, onConflict: 'user_id,book_id');
+      if (_pendingCfi == cfi && _pendingPct == pct) {
+        _pendingCfi = null;
+      }
       _ref.invalidate(bookProgressesProvider);
     } catch (_) {}
   }

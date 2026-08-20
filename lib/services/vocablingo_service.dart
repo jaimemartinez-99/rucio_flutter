@@ -1,7 +1,6 @@
 import 'package:dio/dio.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:supabase/supabase.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class VocablingoException implements Exception {
   const VocablingoException(this.message);
@@ -13,15 +12,16 @@ class VocablingoException implements Exception {
 }
 
 class VocablingoService {
+  static const _url = String.fromEnvironment('VOCABLINGO_SUPABASE_URL');
+  static const _anonKey = String.fromEnvironment(
+    'VOCABLINGO_SUPABASE_ANON_KEY',
+  );
   static final VocablingoService _instance = VocablingoService._internal();
 
   factory VocablingoService() => _instance;
 
   VocablingoService._internal()
-    : client = SupabaseClient(
-        dotenv.get('VOCABLINGO_SUPABASE_URL'),
-        dotenv.get('VOCABLINGO_SUPABASE_ANON_KEY'),
-      ),
+    : client = SupabaseClient(_url, _anonKey),
       _dio = Dio(
         BaseOptions(
           connectTimeout: const Duration(seconds: 15),

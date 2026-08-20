@@ -6,7 +6,7 @@ import 'package:go_router/go_router.dart';
 
 import '../models/book.dart';
 
-class BookCard extends StatelessWidget {
+class BookCard extends StatefulWidget {
   final Book book;
   final double progress;
   final VoidCallback? onTap;
@@ -21,22 +21,56 @@ class BookCard extends StatelessWidget {
   });
 
   @override
+  State<BookCard> createState() => _BookCardState();
+}
+
+class _BookCardState extends State<BookCard> {
+  Uint8List? _coverBytes;
+
+  @override
+  void initState() {
+    super.initState();
+    _decodeCover();
+  }
+
+  @override
+  void didUpdateWidget(BookCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.book.coverUrl != widget.book.coverUrl) _decodeCover();
+  }
+
+  void _decodeCover() {
+    final dataUrl = widget.book.coverUrl;
+    if (dataUrl == null) {
+      _coverBytes = null;
+      return;
+    }
+    try {
+      final encoded = dataUrl.contains(',') ? dataUrl.split(',').last : dataUrl;
+      _coverBytes = base64Decode(encoded);
+    } catch (_) {
+      _coverBytes = null;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Card(
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: onTap ?? () => context.go('/reader/${book.id}'),
-        onLongPress: onLongPress,
+        onTap: widget.onTap ?? () => context.go('/reader/${widget.book.id}'),
+        onLongPress: widget.onLongPress,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Expanded(
-              child: book.coverUrl != null
+              child: _coverBytes != null
                   ? Container(
                       color: const Color(0xFF252336),
                       padding: const EdgeInsets.all(6),
                       child: Image.memory(
-                        _decodeBase64(book.coverUrl!),
+                        _coverBytes!,
+                        cacheWidth: 600,
                         fit: BoxFit.contain,
                         errorBuilder: (context, error, stackTrace) =>
                             _placeholder(context),
@@ -50,17 +84,17 @@ class BookCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    book.title,
+                    widget.book.title,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       fontWeight: FontWeight.w600,
                     ),
                   ),
-                  if (book.author != null) ...[
+                  if (widget.book.author != null) ...[
                     const SizedBox(height: 2),
                     Text(
-                      book.author!,
+                      widget.book.author!,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -74,7 +108,7 @@ class BookCard extends StatelessWidget {
                   ClipRRect(
                     borderRadius: BorderRadius.circular(2),
                     child: LinearProgressIndicator(
-                      value: progress / 100,
+                      value: widget.progress.clamp(0, 100) / 100,
                       minHeight: 3,
                     ),
                   ),
@@ -98,10 +132,5 @@ class BookCard extends StatelessWidget {
         ),
       ),
     );
-  }
-
-  Uint8List _decodeBase64(String dataUrl) {
-    final base64 = dataUrl.contains(',') ? dataUrl.split(',').last : dataUrl;
-    return base64Decode(base64);
   }
 }

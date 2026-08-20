@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -8,8 +7,6 @@ import 'router/app_router.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await dotenv.load();
-
   await Supabase.initialize(
     url: SupabaseConfig.url,
     publishableKey: SupabaseConfig.anonKey,
@@ -53,6 +50,7 @@ class RucioApp extends ConsumerWidget {
         ),
         progressIndicatorTheme: const ProgressIndicatorThemeData(
           color: Color(0xFFf2a65a),
+          linearTrackColor: Color(0xFF252336),
         ),
       ),
       routerConfig: router,

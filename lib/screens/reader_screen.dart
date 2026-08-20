@@ -1,8 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform;
+import 'dart:io' show HttpServer, Platform;
 
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -17,6 +16,7 @@ import '../providers/notes_provider.dart';
 import '../providers/progress_provider.dart';
 import '../providers/settings_provider.dart';
 import '../services/vocablingo_service.dart';
+import '../services/cache_service.dart';
 import '../widgets/claude_chat_sheet.dart';
 import '../widgets/note_editor_sheet.dart';
 import '../widgets/search_panel.dart';
@@ -51,6 +51,8 @@ class _MobileReaderScreen extends ConsumerStatefulWidget {
 }
 
 class _ReaderScreenState extends ConsumerState<_MobileReaderScreen> {
+  final CacheService _cacheService = CacheService();
+  HttpServer? _readerServer;
   WebViewController? _webViewController;
   late final ProgressNotifier _progressNotifier;
   Timer? _readingTimer;
@@ -62,6 +64,7 @@ class _ReaderScreenState extends ConsumerState<_MobileReaderScreen> {
   List<TocItem> _tocItems = [];
   bool _isLoading = true;
   String? _loadError;
+  bool _showChrome = true;
   bool _showSearch = false;
   String _searchQuery = '';
   final List<SearchResult> _searchResults = [];
@@ -104,19 +107,11 @@ class _ReaderScreenState extends ConsumerState<_MobileReaderScreen> {
       final signedUrl = await Supabase.instance.client.storage
           .from('libros')
           .createSignedUrl(bookData['file_path'] as String, 3600);
-      final epubResponse = await Dio().get<List<int>>(
-        signedUrl,
-        options: Options(
-          responseType: ResponseType.bytes,
-          connectTimeout: const Duration(seconds: 20),
-          receiveTimeout: const Duration(seconds: 60),
-        ),
-      );
-      final epubBytes = epubResponse.data;
-      if (epubBytes == null || epubBytes.isEmpty) {
-        throw StateError('The downloaded EPUB file is empty.');
-      }
-
+      final epubPath =
+          await _cacheService.getCachedEpubPath(widget.bookId) ??
+          await _cacheService.downloadAndCache(widget.bookId, signedUrl);
+      final readerServer = await _cacheService.serveEpub(epubPath);
+      _readerServer = readerServer.server;
       final htmlContent = await rootBundle.loadString('assets/reader.html');
       final jsZipSource = await rootBundle.loadString(
         'assets/epubjs/jszip.min.js',
@@ -127,10 +122,10 @@ class _ReaderScreenState extends ConsumerState<_MobileReaderScreen> {
       final fullHtml = htmlContent
           .replaceFirst('{{{JSZIP_SOURCE}}}', jsZipSource)
           .replaceFirst('{{{EPUBJS_SOURCE}}}', epubJsSource)
-          .replaceFirst(
-            '{{{EPUB_DATA_JSON}}}',
-            jsonEncode(base64Encode(epubBytes)),
-          );
+          .replaceFirst('{{{EPUB_URL_JSON}}}', jsonEncode(readerServer.url))
+          .replaceFirst('{{{EPUB_DATA_JSON}}}', 'null');
+
+      if (!mounted) return;
 
       final controller = WebViewController();
       await controller.enableZoom(true);
@@ -138,6 +133,7 @@ class _ReaderScreenState extends ConsumerState<_MobileReaderScreen> {
       controller.addJavaScriptChannel(
         'Relocated',
         onMessageReceived: (message) {
+          if (!mounted) return;
           final data = jsonDecode(message.message) as Map<String, dynamic>;
           final cfi = data['cfi'] as String?;
           final href = data['href'] as String?;
@@ -153,14 +149,12 @@ class _ReaderScreenState extends ConsumerState<_MobileReaderScreen> {
         },
       );
 
-      controller.addJavaScriptChannel(
-        'Selection',
-        onMessageReceived: (_) => setState(() {}),
-      );
+      controller.addJavaScriptChannel('Selection', onMessageReceived: (_) {});
 
       controller.addJavaScriptChannel(
         'SelectionAction',
         onMessageReceived: (message) {
+          if (!mounted) return;
           final data = jsonDecode(message.message) as Map<String, dynamic>;
           final action = data['action'] as String?;
           final cfiRange = data['cfiRange'] as String?;
@@ -188,12 +182,15 @@ class _ReaderScreenState extends ConsumerState<_MobileReaderScreen> {
 
       controller.addJavaScriptChannel(
         'NoteTapped',
-        onMessageReceived: (message) => _openNote(message.message),
+        onMessageReceived: (message) {
+          if (mounted) _openNote(message.message);
+        },
       );
 
       controller.addJavaScriptChannel(
         'Toc',
         onMessageReceived: (message) {
+          if (!mounted) return;
           final List<dynamic> tocJson = jsonDecode(message.message);
           setState(() {
             _tocItems = tocJson
@@ -213,10 +210,12 @@ class _ReaderScreenState extends ConsumerState<_MobileReaderScreen> {
       controller.addJavaScriptChannel(
         'ReaderReady',
         onMessageReceived: (_) async {
-          if (mounted) setState(() => _isLoading = false);
+          if (!mounted) return;
+          setState(() => _isLoading = false);
           _startReadingTimer();
           final progress = ref.read(progressProvider(widget.bookId).notifier);
           await progress.fetchProgress();
+          if (!mounted || _webViewController != controller) return;
           final css = ref.read(settingsProvider).buildCss();
           await controller.runJavaScript('setStyles(${jsonEncode(css)})');
           final layout = ref.read(settingsProvider).layout;
@@ -226,6 +225,7 @@ class _ReaderScreenState extends ConsumerState<_MobileReaderScreen> {
           final targetCfi = widget.initialCfi ?? progress.lastCfi;
           if (targetCfi != null) {
             await Future<void>.delayed(const Duration(milliseconds: 150));
+            if (!mounted || _webViewController != controller) return;
             await controller.runJavaScript('goToCfi(${jsonEncode(targetCfi)})');
           }
           await _injectHighlights(controller);
@@ -243,6 +243,7 @@ class _ReaderScreenState extends ConsumerState<_MobileReaderScreen> {
       controller.addJavaScriptChannel(
         'SearchResults',
         onMessageReceived: (message) {
+          if (!mounted) return;
           final List<dynamic> jsonList = jsonDecode(message.message);
           final results = jsonList
               .map((e) => SearchResult.fromJson(e as Map<String, dynamic>))
@@ -271,6 +272,8 @@ class _ReaderScreenState extends ConsumerState<_MobileReaderScreen> {
 
       await controller.loadHtmlString(fullHtml);
     } catch (e) {
+      unawaited(_readerServer?.close(force: true));
+      _readerServer = null;
       _setLoadError('Failed to load book: $e');
     }
   }
@@ -442,9 +445,9 @@ class _ReaderScreenState extends ConsumerState<_MobileReaderScreen> {
             ])})',
           );
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Nota guardada')),
-            );
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text('Nota guardada')));
           }
         },
       ),
@@ -457,15 +460,7 @@ class _ReaderScreenState extends ConsumerState<_MobileReaderScreen> {
     final notes = ref.read(bookNotesProvider(widget.bookId)).notes;
     if (notes.isEmpty) return;
     await controller.runJavaScript(
-      'renderNotes(${jsonEncode(
-        notes
-            .map((note) => {
-                  'id': note.id,
-                  'cfi_range': note.cfiRange,
-                  'color': note.color,
-                })
-            .toList(),
-      )})',
+      'renderNotes(${jsonEncode(notes.map((note) => {'id': note.id, 'cfi_range': note.cfiRange, 'color': note.color}).toList())})',
     );
   }
 
@@ -485,16 +480,14 @@ class _ReaderScreenState extends ConsumerState<_MobileReaderScreen> {
               .updateNote(note.id, content: content, color: color);
           await _webViewController?.runJavaScript(
             'rendition.annotations.remove(${jsonEncode(note.cfiRange)}, "underline"); renderNotes(${jsonEncode([
-              {
-                'id': note.id,
-                'cfi_range': note.cfiRange,
-                'color': color,
-              },
+              {'id': note.id, 'cfi_range': note.cfiRange, 'color': color},
             ])})',
           );
         },
         onDelete: () async {
-          await ref.read(bookNotesProvider(widget.bookId).notifier).deleteNote(note.id);
+          await ref
+              .read(bookNotesProvider(widget.bookId).notifier)
+              .deleteNote(note.id);
           await _webViewController?.runJavaScript(
             'rendition.annotations.remove(${jsonEncode(note.cfiRange)}, "underline")',
           );
@@ -512,12 +505,11 @@ class _ReaderScreenState extends ConsumerState<_MobileReaderScreen> {
         minChildSize: 0.3,
         maxChildSize: 0.95,
         expand: false,
-        builder: (ctx, scrollController) =>
-            ClaudeChatSheet(
-              bookId: widget.bookId,
-              selectedText: selectedText,
-              readingContext: _claudeReadingContext,
-            ),
+        builder: (ctx, scrollController) => ClaudeChatSheet(
+          bookId: widget.bookId,
+          selectedText: selectedText,
+          readingContext: _claudeReadingContext,
+        ),
       ),
     );
   }
@@ -557,9 +549,8 @@ class _ReaderScreenState extends ConsumerState<_MobileReaderScreen> {
         minChildSize: 0.3,
         maxChildSize: 0.9,
         expand: false,
-        builder: (context, scrollController) => TranslationSheet(
-          selectedText: selectedText,
-        ),
+        builder: (context, scrollController) =>
+            TranslationSheet(selectedText: selectedText),
       ),
     );
   }
@@ -585,7 +576,8 @@ class _ReaderScreenState extends ConsumerState<_MobileReaderScreen> {
   }
 
   void _toggleAppBar() {
-    setState(() {});
+    if (!mounted) return;
+    setState(() => _showChrome = !_showChrome);
   }
 
   void _saveProgress() {
@@ -708,6 +700,7 @@ class _ReaderScreenState extends ConsumerState<_MobileReaderScreen> {
   @override
   void dispose() {
     unawaited(_progressNotifier.flushProgress());
+    unawaited(_readerServer?.close(force: true));
     _readingTimer?.cancel();
     _searchFocusNode.dispose();
     if (Platform.isAndroid) {
@@ -722,82 +715,84 @@ class _ReaderScreenState extends ConsumerState<_MobileReaderScreen> {
     final isMobile = screenWidth < 600;
     return Scaffold(
       resizeToAvoidBottomInset: false,
-      appBar: AppBar(
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(28),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: Row(
-              children: [
-                Text(
-                  '${_progress.toStringAsFixed(0)}% leído',
-                  style: Theme.of(context).textTheme.labelLarge,
+      appBar: _showChrome
+          ? AppBar(
+              bottom: PreferredSize(
+                preferredSize: const Size.fromHeight(28),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: Row(
+                    children: [
+                      Text(
+                        '${_progress.toStringAsFixed(0)}% leído',
+                        style: Theme.of(context).textTheme.labelLarge,
+                      ),
+                      const SizedBox(width: 12),
+                      Text('Sesión: $_readingTimeLabel'),
+                    ],
+                  ),
                 ),
-                const SizedBox(width: 12),
-                Text('Sesión: $_readingTimeLabel'),
+              ),
+              actions: [
+                IconButton(
+                  icon: const Icon(Icons.home_outlined),
+                  tooltip: 'Library',
+                  onPressed: () => context.go('/'),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.save_outlined),
+                  tooltip: 'Save progress',
+                  onPressed: _saveProgress,
+                ),
+                PopupMenuButton<_MobileReaderTool>(
+                  tooltip: 'Herramientas de lectura',
+                  icon: const Icon(Icons.handyman_outlined),
+                  onSelected: (tool) {
+                    switch (tool) {
+                      case _MobileReaderTool.search:
+                        _toggleSearch();
+                      case _MobileReaderTool.claude:
+                        _showClaudeChat(null);
+                      case _MobileReaderTool.toc:
+                        _showToc();
+                      case _MobileReaderTool.settings:
+                        _showSettings();
+                    }
+                  },
+                  itemBuilder: (context) => const [
+                    PopupMenuItem(
+                      value: _MobileReaderTool.search,
+                      child: ListTile(
+                        leading: Icon(Icons.search),
+                        title: Text('Buscar en el libro'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: _MobileReaderTool.claude,
+                      child: ListTile(
+                        leading: Icon(Icons.auto_awesome_outlined),
+                        title: Text('Historial de Claude'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: _MobileReaderTool.toc,
+                      child: ListTile(
+                        leading: Icon(Icons.list),
+                        title: Text('Índice'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: _MobileReaderTool.settings,
+                      child: ListTile(
+                        leading: Icon(Icons.settings),
+                        title: Text('Ajustes de lectura'),
+                      ),
+                    ),
+                  ],
+                ),
               ],
-            ),
-          ),
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.home_outlined),
-            tooltip: 'Library',
-            onPressed: () => context.go('/'),
-          ),
-          IconButton(
-            icon: const Icon(Icons.save_outlined),
-            tooltip: 'Save progress',
-            onPressed: _saveProgress,
-          ),
-          PopupMenuButton<_MobileReaderTool>(
-            tooltip: 'Herramientas de lectura',
-            icon: const Icon(Icons.handyman_outlined),
-            onSelected: (tool) {
-              switch (tool) {
-                case _MobileReaderTool.search:
-                  _toggleSearch();
-                case _MobileReaderTool.claude:
-                  _showClaudeChat(null);
-                case _MobileReaderTool.toc:
-                  _showToc();
-                case _MobileReaderTool.settings:
-                  _showSettings();
-              }
-            },
-            itemBuilder: (context) => const [
-              PopupMenuItem(
-                value: _MobileReaderTool.search,
-                child: ListTile(
-                  leading: Icon(Icons.search),
-                  title: Text('Buscar en el libro'),
-                ),
-              ),
-              PopupMenuItem(
-                value: _MobileReaderTool.claude,
-                child: ListTile(
-                  leading: Icon(Icons.auto_awesome_outlined),
-                  title: Text('Historial de Claude'),
-                ),
-              ),
-              PopupMenuItem(
-                value: _MobileReaderTool.toc,
-                child: ListTile(
-                  leading: Icon(Icons.list),
-                  title: Text('Índice'),
-                ),
-              ),
-              PopupMenuItem(
-                value: _MobileReaderTool.settings,
-                child: ListTile(
-                  leading: Icon(Icons.settings),
-                  title: Text('Ajustes de lectura'),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
+            )
+          : null,
       body: Stack(
         children: [
           if (!Platform.isAndroid && !Platform.isIOS && !_isLoading)

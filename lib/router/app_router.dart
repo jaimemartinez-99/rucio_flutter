@@ -9,11 +9,10 @@ import '../screens/notes_screen.dart';
 import '../screens/reader_screen.dart';
 
 final routerProvider = Provider<GoRouter>((ref) {
-  final authState = ref.watch(authProvider);
-
-  return GoRouter(
+  final router = GoRouter(
     initialLocation: '/',
     redirect: (context, state) {
+      final authState = ref.read(authProvider);
       final isLoggedIn = authState.user != null;
       final isLoggingIn = state.uri.path == '/login';
 
@@ -50,4 +49,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
     ],
   );
+  ref.listen(authProvider, (_, _) => router.refresh());
+  ref.onDispose(router.dispose);
+  return router;
 });
