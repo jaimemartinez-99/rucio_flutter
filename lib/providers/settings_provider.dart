@@ -102,8 +102,10 @@ class SettingsNotifier extends StateNotifier<ReadingSettings> {
   static const _keyMarginH = 'reading_margin_h';
   static const _keyParagraphSpacing = 'reading_paragraph_spacing';
 
+  late final Future<void> initialized;
+
   SettingsNotifier() : super(const ReadingSettings()) {
-    _load();
+    initialized = _load();
   }
 
   Future<void> _load() async {

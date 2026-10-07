@@ -211,14 +211,15 @@ class _ReaderScreenState extends ConsumerState<_MobileReaderScreen> {
         'ReaderReady',
         onMessageReceived: (_) async {
           if (!mounted) return;
-          setState(() => _isLoading = false);
-          _startReadingTimer();
           final progress = ref.read(progressProvider(widget.bookId).notifier);
-          await progress.fetchProgress();
+          final settings = ref.read(settingsProvider.notifier);
+          await Future.wait([progress.fetchProgress(), settings.initialized]);
           if (!mounted || _webViewController != controller) return;
-          final css = ref.read(settingsProvider).buildCss();
-          await controller.runJavaScript('setStyles(${jsonEncode(css)})');
-          final layout = ref.read(settingsProvider).layout;
+          final readingSettings = ref.read(settingsProvider);
+          await controller.runJavaScript(
+            'setStyles(${jsonEncode(readingSettings.buildCss())})',
+          );
+          final layout = readingSettings.layout;
           await controller.runJavaScript(
             "setPageLayout('${layout == ReadingLayout.twoColumns ? 'two' : 'one'}')",
           );
@@ -228,6 +229,9 @@ class _ReaderScreenState extends ConsumerState<_MobileReaderScreen> {
             if (!mounted || _webViewController != controller) return;
             await controller.runJavaScript('goToCfi(${jsonEncode(targetCfi)})');
           }
+          if (!mounted || _webViewController != controller) return;
+          setState(() => _isLoading = false);
+          _startReadingTimer();
           await _injectHighlights(controller);
           await _injectNotes(controller);
         },

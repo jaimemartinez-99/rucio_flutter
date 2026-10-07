@@ -21,11 +21,7 @@ import '../widgets/settings_panel.dart';
 import '../widgets/toc_drawer.dart';
 
 class WindowsReaderScreen extends ConsumerStatefulWidget {
-  const WindowsReaderScreen({
-    super.key,
-    required this.bookId,
-    this.initialCfi,
-  });
+  const WindowsReaderScreen({super.key, required this.bookId, this.initialCfi});
 
   final String bookId;
   final String? initialCfi;
@@ -79,7 +75,9 @@ class _WindowsReaderScreenState extends ConsumerState<WindowsReaderScreen> {
           .eq('user_id', userId)
           .single();
       final filePath = book['file_path'] as String?;
-      if (filePath == null) throw StateError('This EPUB is no longer available.');
+      if (filePath == null) {
+        throw StateError('This EPUB is no longer available.');
+      }
 
       final signedUrl = await Supabase.instance.client.storage
           .from('libros')
@@ -100,7 +98,10 @@ class _WindowsReaderScreenState extends ConsumerState<WindowsReaderScreen> {
           .replaceFirst('{{{JSZIP_SOURCE}}}', jsZip)
           .replaceFirst('{{{EPUBJS_SOURCE}}}', epubJs)
           .replaceFirst('{{{EPUB_URL_JSON}}}', 'null')
-          .replaceFirst('{{{EPUB_DATA_JSON}}}', jsonEncode(base64Encode(epubBytes)));
+          .replaceFirst(
+            '{{{EPUB_DATA_JSON}}}',
+            jsonEncode(base64Encode(epubBytes)),
+          );
 
       final controller = WebviewController();
       await controller.initialize();
@@ -135,7 +136,9 @@ class _WindowsReaderScreenState extends ConsumerState<WindowsReaderScreen> {
             _progress = percentage;
           });
         }
-        ref.read(progressProvider(widget.bookId).notifier).saveProgress(cfi, percentage);
+        ref
+            .read(progressProvider(widget.bookId).notifier)
+            .saveProgress(cfi, percentage);
       case 'Toc':
         final data = jsonDecode(message) as List<dynamic>;
         if (mounted) {
@@ -171,9 +174,14 @@ class _WindowsReaderScreenState extends ConsumerState<WindowsReaderScreen> {
     final controller = _controller;
     if (controller == null) return;
     final progress = ref.read(progressProvider(widget.bookId).notifier);
-    await progress.fetchProgress();
-    await _runJavaScript('setStyles(${jsonEncode(ref.read(settingsProvider).buildCss())})');
-    final layout = ref.read(settingsProvider).layout;
+    final settings = ref.read(settingsProvider.notifier);
+    await Future.wait([progress.fetchProgress(), settings.initialized]);
+    if (!mounted || _controller != controller) return;
+    final readingSettings = ref.read(settingsProvider);
+    await _runJavaScript(
+      'setStyles(${jsonEncode(readingSettings.buildCss())})',
+    );
+    final layout = readingSettings.layout;
     await _runJavaScript(
       "setPageLayout('${layout == ReadingLayout.twoColumns ? 'two' : 'one'}')",
     );
@@ -214,7 +222,9 @@ class _WindowsReaderScreenState extends ConsumerState<WindowsReaderScreen> {
           .read(bookHighlightsProvider(widget.bookId).notifier)
           .addHighlight(cfiRange, text, color: '#FACC15');
       await _runJavaScript(
-        'renderHighlights(${jsonEncode([{'cfi_range': cfiRange, 'color': '#FACC15'}])})',
+        'renderHighlights(${jsonEncode([
+          {'cfi_range': cfiRange, 'color': '#FACC15'},
+        ])})',
       );
       _showMessage('Highlight saved');
     } else if (action == 'note') {
@@ -224,15 +234,21 @@ class _WindowsReaderScreenState extends ConsumerState<WindowsReaderScreen> {
     } else if (action == 'claude') {
       _showClaudeChat(text);
     } else if (action == 'translate') {
-      _showMessage('La traducción sin conexión está disponible en Android e iOS.');
+      _showMessage(
+        'La traducción sin conexión está disponible en Android e iOS.',
+      );
     } else if (action == 'vocablingo') {
       _showMessage('Vocablingo está disponible actualmente en móvil.');
     }
   }
 
   Future<void> _injectHighlights() async {
-    await ref.read(bookHighlightsProvider(widget.bookId).notifier).fetchHighlights();
-    final highlights = ref.read(bookHighlightsProvider(widget.bookId)).highlights;
+    await ref
+        .read(bookHighlightsProvider(widget.bookId).notifier)
+        .fetchHighlights();
+    final highlights = ref
+        .read(bookHighlightsProvider(widget.bookId))
+        .highlights;
     if (highlights.isEmpty) return;
     await _runJavaScript(
       'renderHighlights(${jsonEncode(highlights.map((h) => {'cfi_range': h.cfiRange, 'color': h.color}).toList())})',
@@ -244,15 +260,7 @@ class _WindowsReaderScreenState extends ConsumerState<WindowsReaderScreen> {
     final notes = ref.read(bookNotesProvider(widget.bookId)).notes;
     if (notes.isEmpty) return;
     await _runJavaScript(
-      'renderNotes(${jsonEncode(
-        notes
-            .map((note) => {
-                  'id': note.id,
-                  'cfi_range': note.cfiRange,
-                  'color': note.color,
-                })
-            .toList(),
-      )})',
+      'renderNotes(${jsonEncode(notes.map((note) => {'id': note.id, 'cfi_range': note.cfiRange, 'color': note.color}).toList())})',
     );
   }
 
@@ -298,16 +306,14 @@ class _WindowsReaderScreenState extends ConsumerState<WindowsReaderScreen> {
               .updateNote(note.id, content: content, color: color);
           await _runJavaScript(
             'rendition.annotations.remove(${jsonEncode(note.cfiRange)}, "underline"); renderNotes(${jsonEncode([
-              {
-                'id': note.id,
-                'cfi_range': note.cfiRange,
-                'color': color,
-              },
+              {'id': note.id, 'cfi_range': note.cfiRange, 'color': color},
             ])})',
           );
         },
         onDelete: () async {
-          await ref.read(bookNotesProvider(widget.bookId).notifier).deleteNote(note.id);
+          await ref
+              .read(bookNotesProvider(widget.bookId).notifier)
+              .deleteNote(note.id);
           await _runJavaScript(
             'rendition.annotations.remove(${jsonEncode(note.cfiRange)}, "underline")',
           );
@@ -411,7 +417,9 @@ class _WindowsReaderScreenState extends ConsumerState<WindowsReaderScreen> {
 
   void _showMessage(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   void _showToc() {
@@ -434,7 +442,8 @@ class _WindowsReaderScreenState extends ConsumerState<WindowsReaderScreen> {
       builder: (_) => SizedBox(
         width: 420,
         child: SettingsPanel(
-          onCssChanged: (css) => unawaited(_runJavaScript('setStyles(${jsonEncode(css)})')),
+          onCssChanged: (css) =>
+              unawaited(_runJavaScript('setStyles(${jsonEncode(css)})')),
           onLayoutChanged: (layout) => unawaited(
             _runJavaScript(
               "setPageLayout('${layout == ReadingLayout.twoColumns ? 'two' : 'one'}')",
@@ -461,95 +470,98 @@ class _WindowsReaderScreenState extends ConsumerState<WindowsReaderScreen> {
     return Focus(
       autofocus: true,
       onKeyEvent: (_, event) {
-        if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+        if (event is KeyDownEvent &&
+            event.logicalKey == LogicalKeyboardKey.arrowLeft) {
           unawaited(_runJavaScript('prevPage()'));
           return KeyEventResult.handled;
         }
-        if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.arrowRight) {
+        if (event is KeyDownEvent &&
+            event.logicalKey == LogicalKeyboardKey.arrowRight) {
           unawaited(_runJavaScript('nextPage()'));
           return KeyEventResult.handled;
         }
         return KeyEventResult.ignored;
       },
-        child: Scaffold(
-          appBar: AppBar(
-            title: Text('${_progress.toStringAsFixed(0)}% leído'),
-            bottom: PreferredSize(
-              preferredSize: const Size.fromHeight(28),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                child: Row(
-                  children: [
-                    Text('Sesión: $_readingTimeLabel'),
-                  ],
-                ),
-              ),
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text('${_progress.toStringAsFixed(0)}% leído'),
+          bottom: PreferredSize(
+            preferredSize: const Size.fromHeight(28),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Row(children: [Text('Sesión: $_readingTimeLabel')]),
             ),
-            actions: [
-              IconButton(
-                tooltip: 'Biblioteca',
-                icon: const Icon(Icons.home_outlined),
-                onPressed: () => context.go('/'),
-              ),
-              IconButton(
-                tooltip: 'Guardar progreso',
-                icon: const Icon(Icons.save_outlined),
-                onPressed: () => ref
-                    .read(progressProvider(widget.bookId).notifier)
-                    .flushProgress(),
-              ),
-              PopupMenuButton<_WindowsReaderTool>(
-                tooltip: 'Herramientas de lectura',
-                icon: const Icon(Icons.handyman_outlined),
-                onSelected: (tool) {
-                  switch (tool) {
-                    case _WindowsReaderTool.search:
-                      _toggleSearch();
-                    case _WindowsReaderTool.claude:
-                      _showClaudeChat(null);
-                    case _WindowsReaderTool.toc:
-                      _showToc();
-                    case _WindowsReaderTool.settings:
-                      _showSettings();
-                  }
-                },
-                itemBuilder: (context) => const [
-                  PopupMenuItem(
-                    value: _WindowsReaderTool.search,
-                    child: ListTile(
-                      leading: Icon(Icons.search),
-                      title: Text('Buscar en el libro'),
-                    ),
-                  ),
-                  PopupMenuItem(
-                    value: _WindowsReaderTool.claude,
-                    child: ListTile(
-                      leading: Icon(Icons.auto_awesome_outlined),
-                      title: Text('Historial de Claude'),
-                    ),
-                  ),
-                  PopupMenuItem(
-                    value: _WindowsReaderTool.toc,
-                    child: ListTile(
-                      leading: Icon(Icons.list),
-                      title: Text('Índice'),
-                    ),
-                  ),
-                  PopupMenuItem(
-                    value: _WindowsReaderTool.settings,
-                    child: ListTile(
-                      leading: Icon(Icons.settings),
-                      title: Text('Ajustes de lectura'),
-                    ),
-                  ),
-                ],
-              ),
-            ],
           ),
+          actions: [
+            IconButton(
+              tooltip: 'Biblioteca',
+              icon: const Icon(Icons.home_outlined),
+              onPressed: () => context.go('/'),
+            ),
+            IconButton(
+              tooltip: 'Guardar progreso',
+              icon: const Icon(Icons.save_outlined),
+              onPressed: () => ref
+                  .read(progressProvider(widget.bookId).notifier)
+                  .flushProgress(),
+            ),
+            PopupMenuButton<_WindowsReaderTool>(
+              tooltip: 'Herramientas de lectura',
+              icon: const Icon(Icons.handyman_outlined),
+              onSelected: (tool) {
+                switch (tool) {
+                  case _WindowsReaderTool.search:
+                    _toggleSearch();
+                  case _WindowsReaderTool.claude:
+                    _showClaudeChat(null);
+                  case _WindowsReaderTool.toc:
+                    _showToc();
+                  case _WindowsReaderTool.settings:
+                    _showSettings();
+                }
+              },
+              itemBuilder: (context) => const [
+                PopupMenuItem(
+                  value: _WindowsReaderTool.search,
+                  child: ListTile(
+                    leading: Icon(Icons.search),
+                    title: Text('Buscar en el libro'),
+                  ),
+                ),
+                PopupMenuItem(
+                  value: _WindowsReaderTool.claude,
+                  child: ListTile(
+                    leading: Icon(Icons.auto_awesome_outlined),
+                    title: Text('Historial de Claude'),
+                  ),
+                ),
+                PopupMenuItem(
+                  value: _WindowsReaderTool.toc,
+                  child: ListTile(
+                    leading: Icon(Icons.list),
+                    title: Text('Índice'),
+                  ),
+                ),
+                PopupMenuItem(
+                  value: _WindowsReaderTool.settings,
+                  child: ListTile(
+                    leading: Icon(Icons.settings),
+                    title: Text('Ajustes de lectura'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
         body: Stack(
           children: [
             if (_error != null)
-              Center(child: Padding(padding: const EdgeInsets.all(24), child: Text(_error!, textAlign: TextAlign.center)))
+              Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(_error!, textAlign: TextAlign.center),
+                ),
+              )
             else if (_controller != null)
               Webview(_controller!)
             else
@@ -578,7 +590,10 @@ class _WindowsReaderScreenState extends ConsumerState<WindowsReaderScreen> {
               left: 0,
               right: 0,
               bottom: 0,
-              child: LinearProgressIndicator(value: _progress / 100, minHeight: 3),
+              child: LinearProgressIndicator(
+                value: _progress / 100,
+                minHeight: 3,
+              ),
             ),
           ],
         ),
