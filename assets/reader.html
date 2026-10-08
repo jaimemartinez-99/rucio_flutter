@@ -28,6 +28,7 @@
   <script>{{{EPUBJS_SOURCE}}}</script>
   <script>{{{FOOTNOTES_SOURCE}}}</script>
   <script>{{{AUDIORUCIO_SOURCE}}}</script>
+  <script>{{{NAVIGATION_SOURCE}}}</script>
   <script>
     var book, rendition;
     var readerReady = false;
@@ -93,8 +94,8 @@
         showError('Book load failed: ' + (err.message || err));
       });
 
-      book.loaded.navigation.then(function() {
-        postToFlutter('Toc', JSON.stringify(book.navigation.toc || []));
+      Promise.all([book.loaded.navigation, book.loaded.spine]).then(function() {
+        postToFlutter('Toc', JSON.stringify(RucioNavigation.toc(book)));
       }).catch(function() {
         postToFlutter('Toc', '[]');
       });

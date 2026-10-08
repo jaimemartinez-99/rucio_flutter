@@ -10,6 +10,8 @@ Windows, Android e iOS usan `ReaderScreen`: selección de texto, tipos de highli
 
 El EPUB se sirve desde la caché mediante HTTP en `127.0.0.1`, también en Windows. El archivo no se incrusta en base64 dentro del HTML: así los libros grandes no superan el [límite de 2 MB de NavigateToString en WebView2](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/working-with-local-content). El servidor local se cierra al salir del lector.
 
+Los enlaces del índice EPUB 3 y del NCX de EPUB 2 se resuelven desde la ubicación de su documento dentro del archivo, y se convierten a las rutas que utiliza el orden de lectura de epub.js. Esto permite abrir capítulos cuando el índice está en una subcarpeta distinta del archivo OPF. Se conservan las anclas y los subcapítulos; los índices antiguos con rutas relativas al OPF también siguen funcionando. Las pruebas JavaScript incluyen archivos EPUB generados y la selección real de secciones del motor.
+
 ## Información del libro
 
 Mantener pulsado un libro abre un menú con «Información del libro», además de las opciones de eliminación. La ficha lee título, autores, colaboradores, editorial, idiomas, fecha, identificadores, temas, colección y sinopsis del EPUB. Utiliza el archivo en caché; si no está descargado, lo descarga con la sesión del usuario. El análisis del ZIP y XML se realiza en un isolate.
