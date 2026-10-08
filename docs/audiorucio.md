@@ -60,10 +60,15 @@ El texto es seleccionable. Cada párrafo conserva su rango CFI y los segmentos o
 
 ## Verificación
 
+Windows utiliza la copia local de `audioplayers_windows` en `third_party/audioplayers_windows`, basada en 4.4.1. Los eventos de audio se entregan a Flutter mediante una cola despachada en el hilo de plataforma. Esto corrige el aviso `channel sent a message from native to Flutter on a non-platform thread` de la implementación original. La corrección requiere detener la aplicación y volver a ejecutar `flutter run --dart-define-from-file=.env`: hot reload y hot restart no recompilan el plugin nativo.
+
+`./tool/test_audio_events.ps1` compila y ejecuta las pruebas de concurrencia con las herramientas C++ de Visual Studio y los headers generados por Flutter. Verifican la entrega en el hilo correcto, el orden de los eventos, los detalles de errores y la limpieza al cancelar o destruir el handler.
+
 ```powershell
 flutter pub get
 flutter analyze
 flutter test
+./tool/test_audio_events.ps1
 node --test test/javascript/*.test.cjs
 flutter test integration_test/desktop_audio_test.dart -d windows --dart-define-from-file=.env
 flutter build windows --release --dart-define-from-file=.env

@@ -238,4 +238,47 @@ void main() {
       await directory.delete(recursive: true);
     }
   }, skip: !Platform.isWindows);
+
+  testWidgets(
+    'Windows delivers completion events across repeated player lifetimes',
+    (tester) async {
+      final directory = await Directory.systemTemp.createTemp(
+        'audiorucio_events_',
+      );
+      final file = await File(
+        '${directory.path}/silence.wav',
+      ).writeAsBytes(silentWave());
+      try {
+        for (var iteration = 0; iteration < 3; iteration++) {
+          final audio = DesktopAudioPlayback();
+          final errors = <String>[];
+          final durations = <Duration>[];
+          final errorSubscription = audio.errors.listen(errors.add);
+          final durationSubscription = audio.durations.listen(durations.add);
+          try {
+            await audio.setVolume(0);
+            await audio.load(file.path);
+            final completion = audio.completions.first.timeout(
+              const Duration(seconds: 10),
+            );
+            await audio.seek(const Duration(milliseconds: 2700));
+            await audio.resume();
+            await completion;
+            expect(durations, isNotEmpty);
+            expect(durations.last.inMilliseconds, closeTo(3000, 100));
+            expect(errors, isEmpty);
+          } finally {
+            await durationSubscription.cancel();
+            await errorSubscription.cancel();
+            await audio.dispose();
+          }
+        }
+        await file.delete();
+        expect(await file.exists(), isFalse);
+      } finally {
+        await directory.delete(recursive: true);
+      }
+    },
+    skip: !Platform.isWindows,
+  );
 }
