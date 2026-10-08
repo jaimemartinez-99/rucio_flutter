@@ -1,13 +1,18 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../models/book.dart';
+import '../providers/app_update_provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/book_progresses_provider.dart';
 import '../providers/books_provider.dart';
 import '../widgets/book_card.dart';
 import '../widgets/book_info_dialog.dart';
+import '../widgets/app_update_dialog.dart';
 
 class LibraryScreen extends ConsumerStatefulWidget {
   const LibraryScreen({super.key});
@@ -20,6 +25,30 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   late final TextEditingController _searchController;
   final _scrollController = ScrollController();
   bool _initialFetchDone = false;
+  bool _updateDialogOpen = false;
+
+  Future<void> _checkUpdates({bool automatic = false}) async {
+    if (!Platform.isAndroid || _updateDialogOpen || !mounted) return;
+    final controller = ref.read(appUpdateProvider.notifier);
+    if (automatic) {
+      if (!await controller.check(automatic: true) ||
+          !mounted ||
+          _updateDialogOpen) {
+        return;
+      }
+    } else {
+      unawaited(controller.check());
+    }
+    _updateDialogOpen = true;
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (_) => const AppUpdateDialog(),
+      );
+    } finally {
+      _updateDialogOpen = false;
+    }
+  }
 
   @override
   void initState() {
@@ -32,6 +61,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
       if (user != null) {
         _initialFetchDone = true;
         ref.read(booksProvider.notifier).fetchBooks();
+        unawaited(_checkUpdates(automatic: true));
       }
     });
   }
@@ -168,6 +198,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
       if (!_initialFetchDone && next.user != null) {
         _initialFetchDone = true;
         ref.read(booksProvider.notifier).fetchBooks();
+        unawaited(_checkUpdates(automatic: true));
       }
     });
 
@@ -209,6 +240,20 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
           ),
         ),
         actions: [
+          if (Platform.isAndroid)
+            PopupMenuButton<String>(
+              tooltip: 'Opciones',
+              onSelected: (_) => unawaited(_checkUpdates()),
+              itemBuilder: (_) => const [
+                PopupMenuItem(
+                  value: 'updates',
+                  child: ListTile(
+                    leading: Icon(Icons.system_update),
+                    title: Text('Buscar actualizaciones'),
+                  ),
+                ),
+              ],
+            ),
           IconButton(
             icon: const Icon(Icons.format_paint),
             tooltip: 'Highlights',
