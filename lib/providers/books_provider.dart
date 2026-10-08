@@ -46,8 +46,8 @@ class BooksNotifier extends StateNotifier<BooksState> {
   String? get _userId => Supabase.instance.client.auth.currentUser?.id;
 
   List<Book> get filteredBooks {
-    if (state.searchQuery.isEmpty) return state.books;
-    final q = state.searchQuery.toLowerCase();
+    final q = state.searchQuery.trim().toLowerCase();
+    if (q.isEmpty) return state.books;
     return state.books.where((b) {
       return b.title.toLowerCase().contains(q) ||
           (b.author?.toLowerCase().contains(q) ?? false);

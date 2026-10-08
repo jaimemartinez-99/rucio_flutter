@@ -7,6 +7,7 @@ import '../providers/auth_provider.dart';
 import '../providers/book_progresses_provider.dart';
 import '../providers/books_provider.dart';
 import '../widgets/book_card.dart';
+import '../widgets/book_info_dialog.dart';
 
 class LibraryScreen extends ConsumerStatefulWidget {
   const LibraryScreen({super.key});
@@ -16,13 +17,16 @@ class LibraryScreen extends ConsumerStatefulWidget {
 }
 
 class _LibraryScreenState extends ConsumerState<LibraryScreen> {
-  bool _isSearching = false;
-  final _searchController = TextEditingController();
+  late final TextEditingController _searchController;
+  final _scrollController = ScrollController();
   bool _initialFetchDone = false;
 
   @override
   void initState() {
     super.initState();
+    _searchController = TextEditingController(
+      text: ref.read(booksProvider).searchQuery,
+    );
     Future.microtask(() {
       final user = ref.read(authProvider).user;
       if (user != null) {
@@ -35,6 +39,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   @override
   void dispose() {
     _searchController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -44,46 +49,55 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   }
 
   void _onSearchChanged(String query) {
+    if (_scrollController.hasClients) _scrollController.jumpTo(0);
     ref.read(booksProvider.notifier).searchBooks(query);
   }
 
   Future<void> _manageBook(Book book) async {
-    final action = await showModalBottomSheet<_BookRemovalAction>(
+    final action = await showModalBottomSheet<_BookAction>(
       context: context,
       builder: (sheetContext) => SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(book.title, style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 8),
-              ListTile(
-                leading: const Icon(Icons.delete_outline),
-                title: const Text('Liberar espacio'),
-                subtitle: const Text(
-                  'Elimina el EPUB y conserva los highlights y las notas.',
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(book.title, style: Theme.of(context).textTheme.titleLarge),
+                const SizedBox(height: 8),
+                ListTile(
+                  leading: const Icon(Icons.info_outline),
+                  title: const Text('Información del libro'),
+                  subtitle: const Text(
+                    'Autor, páginas y otros datos del EPUB.',
+                  ),
+                  onTap: () => Navigator.pop(sheetContext, _BookAction.info),
                 ),
-                onTap: () => Navigator.pop(
-                  sheetContext,
-                  _BookRemovalAction.removeEpub,
+                ListTile(
+                  leading: const Icon(Icons.delete_outline),
+                  title: const Text('Liberar espacio'),
+                  subtitle: const Text(
+                    'Elimina el EPUB y conserva los highlights y las notas.',
+                  ),
+                  onTap: () =>
+                      Navigator.pop(sheetContext, _BookAction.removeEpub),
                 ),
-              ),
-              ListTile(
-                leading: const Icon(
-                  Icons.delete_forever_outlined,
-                  color: Color(0xFFF87171),
+                ListTile(
+                  leading: const Icon(
+                    Icons.delete_forever_outlined,
+                    color: Color(0xFFF87171),
+                  ),
+                  title: const Text('Eliminar definitivamente'),
+                  subtitle: const Text(
+                    'Borra el libro, los highlights y las notas.',
+                  ),
+                  onTap: () => Navigator.pop(
+                    sheetContext,
+                    _BookAction.deletePermanently,
+                  ),
                 ),
-                title: const Text('Eliminar definitivamente'),
-                subtitle: const Text(
-                  'Borra el libro, los highlights y las notas.',
-                ),
-                onTap: () => Navigator.pop(
-                  sheetContext,
-                  _BookRemovalAction.deletePermanently,
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -91,7 +105,15 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
     if (action == null) return;
     if (!mounted) return;
 
-    if (action == _BookRemovalAction.deletePermanently) {
+    if (action == _BookAction.info) {
+      await showDialog<void>(
+        context: context,
+        builder: (context) => BookInfoDialog(book: book),
+      );
+      return;
+    }
+
+    if (action == _BookAction.deletePermanently) {
       final confirmed = await showDialog<bool>(
         context: context,
         builder: (dialogContext) => AlertDialog(
@@ -117,7 +139,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
 
     try {
       final notifier = ref.read(booksProvider.notifier);
-      if (action == _BookRemovalAction.removeEpub) {
+      if (action == _BookAction.removeEpub) {
         await notifier.removeEpub(book);
       } else {
         await notifier.deleteBookPermanently(book);
@@ -126,7 +148,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            action == _BookRemovalAction.removeEpub
+            action == _BookAction.removeEpub
                 ? 'EPUB eliminado. Tus highlights y notas se han conservado.'
                 : 'Libro, highlights y notas eliminados.',
           ),
@@ -155,30 +177,38 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: _isSearching
-            ? TextField(
-                controller: _searchController,
-                autofocus: true,
-                onChanged: _onSearchChanged,
-                decoration: const InputDecoration(
-                  hintText: 'Search books...',
-                  border: InputBorder.none,
+        title: const _RucioWordmark(),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(68),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: TextField(
+              controller: _searchController,
+              onChanged: _onSearchChanged,
+              textInputAction: TextInputAction.search,
+              decoration: InputDecoration(
+                hintText: 'Buscar por título o autor',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: state.searchQuery.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: 'Limpiar búsqueda',
+                        icon: const Icon(Icons.close),
+                        onPressed: () {
+                          _searchController.clear();
+                          _onSearchChanged('');
+                        },
+                      ),
+                filled: true,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: BorderSide.none,
                 ),
-              )
-            : const _RucioWordmark(),
-        actions: [
-          IconButton(
-            icon: Icon(_isSearching ? Icons.close : Icons.search),
-            onPressed: () {
-              setState(() {
-                _isSearching = !_isSearching;
-                if (!_isSearching) {
-                  _searchController.clear();
-                  ref.read(booksProvider.notifier).searchBooks('');
-                }
-              });
-            },
+              ),
+            ),
           ),
+        ),
+        actions: [
           IconButton(
             icon: const Icon(Icons.format_paint),
             tooltip: 'Highlights',
@@ -213,7 +243,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                   Text(
                     state.books.isEmpty
                         ? 'No books yet. Tap + to upload.'
-                        : 'No books match your search.',
+                        : 'No hay libros que coincidan con tu búsqueda.',
                     style: Theme.of(context).textTheme.bodyLarge,
                   ),
                 ],
@@ -229,6 +259,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                       ? 3
                       : 2;
                   return GridView.builder(
+                    controller: _scrollController,
                     padding: const EdgeInsets.all(8),
                     gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                       crossAxisCount: crossAxisCount,
@@ -266,7 +297,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   }
 }
 
-enum _BookRemovalAction { removeEpub, deletePermanently }
+enum _BookAction { info, removeEpub, deletePermanently }
 
 class _RucioWordmark extends StatelessWidget {
   const _RucioWordmark();

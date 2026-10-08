@@ -26,6 +26,7 @@
   </div>
   <script>{{{JSZIP_SOURCE}}}</script>
   <script>{{{EPUBJS_SOURCE}}}</script>
+  <script>{{{FOOTNOTES_SOURCE}}}</script>
   <script>
     var book, rendition;
     var readerReady = false;
@@ -35,6 +36,7 @@
     var pageTurnInProgress = false;
     var lastPageTurnAt = 0;
     var searchGeneration = 0;
+    var footnotes;
 
     function postToFlutter(channel, message) {
       if (window.chrome && window.chrome.webview) {
@@ -60,11 +62,17 @@
 
     try {
       book = epubUrl ? ePub(epubUrl) : ePub(base64ToArrayBuffer(epubData), { openAs: 'binary' });
+      footnotes = RucioFootnotes.create({
+        load: function(path) { return book.load(path); },
+        post: function(note) { postToFlutter('Footnote', JSON.stringify(note)); }
+      });
       rendition = book.renderTo(document.getElementById("viewer"), { width: "100%", height: "100%", flow: "paginated", spread: "none" });
       if (!rendition) { showError('renderTo returned undefined'); }
       rendition.hooks.content.register(function(contents) {
         applyContentStyles(contents);
         injectTouchHandlers(contents);
+        var section = book.spine.get(contents.sectionIndex);
+        if (section) footnotes.attach(contents, book.resolve(section.href));
       });
 
       var displayPromise = book.opened.then(function() {
@@ -260,6 +268,7 @@
         var dy = Math.abs(e.changedTouches[0].clientY - startY);
         var dt = Date.now() - startT;
         if (dt > 300 || dx > 10 || dy > 10) return;
+        if (e.target.closest && e.target.closest('a[href]')) return;
         ignoreClickUntil = Date.now() + 500;
         handlePageTap(startX);
       }, { passive: true });

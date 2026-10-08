@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 
 import '../services/translation_service.dart';
@@ -13,12 +15,16 @@ class TranslationSheet extends StatefulWidget {
 
 class _TranslationSheetState extends State<TranslationSheet> {
   late final Future<String> _translation;
+  String _status = 'Preparando la traducción local...';
 
   @override
   void initState() {
     super.initState();
     _translation = TranslationService().translateEnglishToSpanish(
       widget.selectedText,
+      onStatus: (status) {
+        if (mounted) setState(() => _status = status);
+      },
     );
   }
 
@@ -58,25 +64,19 @@ class _TranslationSheetState extends State<TranslationSheet> {
                 ),
               ),
               const Divider(height: 32),
-              Text(
-                'Español',
-                style: Theme.of(context).textTheme.labelLarge,
-              ),
+              Text('Español', style: Theme.of(context).textTheme.labelLarge),
               const SizedBox(height: 8),
               FutureBuilder<String>(
                 future: _translation,
                 builder: (context, snapshot) {
                   if (snapshot.connectionState != ConnectionState.done) {
-                    return const Padding(
+                    return Padding(
                       padding: EdgeInsets.symmetric(vertical: 16),
                       child: Column(
                         children: [
-                          CircularProgressIndicator(),
-                          SizedBox(height: 12),
-                          Text(
-                            'Preparando la traducción local. La primera vez se descargarán los modelos.',
-                            textAlign: TextAlign.center,
-                          ),
+                          const CircularProgressIndicator(),
+                          const SizedBox(height: 12),
+                          Text(_status, textAlign: TextAlign.center),
                         ],
                       ),
                     );
@@ -94,10 +94,15 @@ class _TranslationSheetState extends State<TranslationSheet> {
                 },
               ),
               const SizedBox(height: 24),
-              const Center(
+              Center(
                 child: Text(
-                  'Con tecnología de Google',
-                  style: TextStyle(color: Color(0xFF7c748e), fontSize: 12),
+                  Platform.isWindows
+                      ? 'Traducción local · CTranslate2 / Argos'
+                      : 'Con tecnología de Google',
+                  style: const TextStyle(
+                    color: Color(0xFF7c748e),
+                    fontSize: 12,
+                  ),
                 ),
               ),
             ],

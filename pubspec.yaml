@@ -46,6 +46,7 @@ dependencies:
   webview_windows: ^0.4.0
   flutter_markdown: ^0.7.6
   google_mlkit_translation: ^0.14.0
+  crypto: ^3.0.7
 
 dev_dependencies:
   flutter_test:
@@ -74,6 +75,8 @@ flutter:
     - assets/reader.html
     - assets/epubjs/epub.min.js
     - assets/epubjs/jszip.min.js
+    - assets/epubjs/footnotes.js
+    - assets/translation/translate.py
 
   # To add assets to your application, add an assets section, like this:
   # assets:
@@ -112,3 +115,7 @@ flutter_launcher_icons:
   image_path: "assets/icon/icon.png"
   adaptive_icon_background: "#0f0e17"
   adaptive_icon_foreground: "assets/icon/icon.png"
+  windows:
+    generate: true
+    image_path: "assets/icon/icon.png"
+    icon_size: 256
