@@ -58,7 +58,7 @@ class AudioRucioPlayer extends ConsumerWidget {
               ),
               const SizedBox(height: 12),
               const Text(
-                'La clave se mantiene solo durante esta sesión. El audio se guarda en este PC.',
+                'La clave se mantiene solo durante esta sesión. El audio se guarda en este dispositivo.',
               ),
             ],
           ),
@@ -94,7 +94,8 @@ class AudioRucioPlayer extends ConsumerWidget {
     final author = session.book?.author ?? '';
     final page = audio.page;
     final canControl = !audio.isBusy && page != null;
-    return Material(
+    final compact = MediaQuery.sizeOf(context).width < 600;
+    final content = Material(
       color: const Color(0xFF0F0E17),
       child: DecoratedBox(
         decoration: const BoxDecoration(
@@ -109,8 +110,8 @@ class AudioRucioPlayer extends ConsumerWidget {
           child: Column(
             children: [
               Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 20,
+                padding: EdgeInsets.symmetric(
+                  horizontal: compact ? 8 : 20,
                   vertical: 12,
                 ),
                 child: Row(
@@ -123,16 +124,19 @@ class AudioRucioPlayer extends ConsumerWidget {
                       },
                       icon: const Icon(Icons.arrow_back_rounded),
                     ),
-                    const SizedBox(width: 8),
-                    const Icon(Icons.graphic_eq, color: Color(0xFFF2A65A)),
-                    const SizedBox(width: 10),
-                    Text(
-                      'Audiorucio',
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w700,
+                    if (!compact) ...[
+                      const SizedBox(width: 8),
+                      const Icon(Icons.graphic_eq, color: Color(0xFFF2A65A)),
+                      const SizedBox(width: 10),
+                    ],
+                    Expanded(
+                      child: Text(
+                        'Audiorucio',
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
                     ),
-                    const Spacer(),
                     IconButton(
                       tooltip: 'Consumo mensual',
                       onPressed: () => showDialog<void>(
@@ -165,7 +169,7 @@ class AudioRucioPlayer extends ConsumerWidget {
                             ),
                             title: const Text('Vaciar caché de audio'),
                             subtitle: Text(
-                              '${(audio.cacheBytes / 1024 / 1024).toStringAsFixed(1)} MB de 500 MB · Este PC',
+                              '${(audio.cacheBytes / 1024 / 1024).toStringAsFixed(1)} MB de 500 MB · Este dispositivo',
                             ),
                           ),
                         ),
@@ -202,7 +206,10 @@ class AudioRucioPlayer extends ConsumerWidget {
                       padding: const EdgeInsets.symmetric(horizontal: 20),
                       child: Column(
                         children: [
-                          SizedBox(height: 150, child: cover),
+                          SizedBox(
+                            height: constraints.maxHeight < 350 ? 88 : 150,
+                            child: cover,
+                          ),
                           const SizedBox(height: 16),
                           Expanded(child: text),
                         ],
@@ -321,10 +328,10 @@ class AudioRucioPlayer extends ConsumerWidget {
                                   padding: EdgeInsets.zero,
                                   shape: const CircleBorder(),
                                 ),
-                                onPressed: audio.isBusy
+                                onPressed: audio.isBusy && !audio.wantsPlayback
                                     ? null
                                     : () => unawaited(audio.togglePlayback()),
-                                child: audio.isBusy
+                                child: audio.isBusy && !audio.wantsPlayback
                                     ? const SizedBox(
                                         width: 24,
                                         height: 24,
@@ -333,11 +340,11 @@ class AudioRucioPlayer extends ConsumerWidget {
                                         ),
                                       )
                                     : Icon(
-                                        audio.isPlaying
+                                        audio.wantsPlayback
                                             ? Icons.pause_rounded
                                             : Icons.play_arrow_rounded,
                                         size: 36,
-                                        semanticLabel: audio.isPlaying
+                                        semanticLabel: audio.wantsPlayback
                                             ? 'Pausar'
                                             : 'Reproducir',
                                       ),
@@ -391,7 +398,7 @@ class AudioRucioPlayer extends ConsumerWidget {
                           : audio.finished
                           ? 'Has llegado al final del libro'
                           : audio.fromCache
-                          ? 'Audio en este PC · Disponible sin conexión'
+                          ? 'Audio local · Disponible sin conexión'
                           : 'Google Cloud · Caché local de hasta 500 MB',
                       style: const TextStyle(
                         color: Color(0xFFA8A1B5),
@@ -405,6 +412,14 @@ class AudioRucioPlayer extends ConsumerWidget {
           ),
         ),
       ),
+    );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxHeight >= 600) return content;
+        return SingleChildScrollView(
+          child: SizedBox(height: 680, child: content),
+        );
+      },
     );
   }
 }
@@ -535,7 +550,9 @@ class _BookDisplayState extends State<_BookDisplay> {
                 ),
               ),
               const SizedBox(width: 20),
-              Expanded(child: _title(context)),
+              Expanded(
+                child: _title(context, compact: constraints.maxHeight < 140),
+              ),
             ],
           );
         }
@@ -577,33 +594,41 @@ class _BookDisplayState extends State<_BookDisplay> {
     );
   }
 
-  Widget _title(BuildContext context) => Column(
+  Widget _title(BuildContext context, {bool compact = false}) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     mainAxisSize: MainAxisSize.min,
     children: [
-      const Text(
-        'ESCUCHANDO AHORA',
-        style: TextStyle(
-          fontSize: 11,
-          letterSpacing: 2,
-          color: Color(0xFFF2A65A),
-          fontWeight: FontWeight.w700,
+      if (!compact)
+        const Text(
+          'ESCUCHANDO AHORA',
+          style: TextStyle(
+            fontSize: 11,
+            letterSpacing: 2,
+            color: Color(0xFFF2A65A),
+            fontWeight: FontWeight.w700,
+          ),
         ),
-      ),
-      const SizedBox(height: 10),
+      if (!compact) const SizedBox(height: 10),
       Text(
         title,
         maxLines: 2,
         overflow: TextOverflow.ellipsis,
-        style: Theme.of(
-          context,
-        ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
+        style:
+            (compact
+                    ? Theme.of(context).textTheme.titleMedium
+                    : Theme.of(context).textTheme.headlineSmall)
+                ?.copyWith(fontWeight: FontWeight.bold),
       ),
       if (author.isNotEmpty) ...[
-        const SizedBox(height: 8),
+        SizedBox(height: compact ? 4 : 8),
         Text(
           author,
-          style: const TextStyle(color: Color(0xFFA8A1B5), fontSize: 16),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: const Color(0xFFA8A1B5),
+            fontSize: compact ? 12 : 16,
+          ),
         ),
       ],
     ],
@@ -634,11 +659,14 @@ class _ReadingDisplay extends StatelessWidget {
               size: 20,
             ),
             const SizedBox(width: 10),
-            Text(
-              finished ? 'Lectura completada' : 'Texto de la lectura',
-              style: const TextStyle(fontWeight: FontWeight.w600),
+            Expanded(
+              child: Text(
+                finished ? 'Lectura completada' : 'Texto de la lectura',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
             ),
-            const Spacer(),
             const Icon(
               Icons.headphones_rounded,
               color: Color(0xFF7C748E),

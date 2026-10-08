@@ -69,10 +69,24 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   Size? _audioReaderSize;
   int _audioRequestId = 0;
   final Map<int, Completer<AudioPage?>> _audioRequests = {};
+  late final AppLifecycleListener _audioLifecycle;
+  bool _appInForeground = true;
 
   @override
   void initState() {
     super.initState();
+    _audioLifecycle = AppLifecycleListener(
+      onStateChange: (state) {
+        _appInForeground = state == AppLifecycleState.resumed;
+        if (_appInForeground && _audioSession != null && _currentCfi != null) {
+          unawaited(
+            _webViewController?.runJavaScript(
+              'goToCfi(${jsonEncode(_currentCfi)})',
+            ),
+          );
+        }
+      },
+    );
     _progressNotifier = ref.read(progressProvider(widget.bookId).notifier);
     if (Platform.isAndroid) {
       unawaited(
@@ -139,6 +153,10 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
         case 'Relocated':
           final data = jsonDecode(message) as Map<String, dynamic>;
           final cfi = data['cfi'] as String? ?? '';
+          final audioPage = _audioSession == null
+              ? null
+              : ref.read(audioRucioProvider(_audioSession!)).page;
+          if (audioPage != null && audioPage.startCfi != cfi) return;
           final percentage = (data['percentage'] as num?)?.toDouble() ?? 0;
           setState(() {
             _currentCfi = cfi;
@@ -514,7 +532,8 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
         builder: (ctx) => SizedBox(
           width: 400,
           child: SettingsPanel(
-            onStartAudio: Platform.isWindows && !_isLoading
+            onStartAudio:
+                (Platform.isWindows || Platform.isAndroid) && !_isLoading
                 ? () {
                     Navigator.pop(ctx);
                     _startAudioRucio();
@@ -541,6 +560,13 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
           maxChildSize: 0.9,
           expand: false,
           builder: (ctx, scrollController) => SettingsPanel(
+            onStartAudio:
+                (Platform.isWindows || Platform.isAndroid) && !_isLoading
+                ? () {
+                    Navigator.pop(ctx);
+                    _startAudioRucio();
+                  }
+                : null,
             onCssChanged: (css) {
               controller.runJavaScript('setStyles(${jsonEncode(css)})');
             },
@@ -602,12 +628,29 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
         loadPage: _requestAudioPage,
         onPageChanged: (page) async {
           if (mounted) {
-            await _webViewController?.runJavaScript(
-              'goToCfi(${jsonEncode(page.startCfi)})',
-            );
+            setState(() {
+              _currentCfi = page.startCfi;
+              _currentHref = page.href;
+              _progress = page.percentage ?? _progress;
+            });
+            _progressNotifier.saveProgress(page.startCfi, _progress);
+            if (_appInForeground) {
+              await _webViewController?.runJavaScript(
+                'goToCfi(${jsonEncode(page.startCfi)})',
+              );
+            }
           }
         },
       );
+    });
+  }
+
+  void _exitAudioRucio() {
+    if (!mounted || _audioSession == null) return;
+    unawaited(_webViewController?.runJavaScript('closeAudioReader()'));
+    setState(() {
+      _audioSession = null;
+      _audioReaderSize = null;
     });
   }
 
@@ -674,6 +717,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
 
   @override
   void dispose() {
+    _audioLifecycle.dispose();
     for (final request in _audioRequests.values) {
       if (!request.isCompleted) request.complete(null);
     }
@@ -714,176 +758,178 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
         }
         return KeyEventResult.ignored;
       },
-      child: Scaffold(
-        resizeToAvoidBottomInset: false,
-        appBar: _showChrome && _audioSession == null
-            ? AppBar(
-                bottom: PreferredSize(
-                  preferredSize: const Size.fromHeight(28),
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                    child: Row(
-                      children: [
-                        Text(
-                          '${_progress.toStringAsFixed(0)}% leído',
-                          style: Theme.of(context).textTheme.labelLarge,
-                        ),
-                        const SizedBox(width: 12),
-                        Text('Sesión: $_readingTimeLabel'),
-                      ],
+      child: PopScope(
+        canPop: _audioSession == null,
+        onPopInvokedWithResult: (didPop, result) async {
+          final session = _audioSession;
+          if (didPop || session == null) return;
+          await ref.read(audioRucioProvider(session)).close();
+          _exitAudioRucio();
+        },
+        child: Scaffold(
+          resizeToAvoidBottomInset: false,
+          appBar: _showChrome && _audioSession == null
+              ? AppBar(
+                  bottom: PreferredSize(
+                    preferredSize: const Size.fromHeight(28),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                      child: Row(
+                        children: [
+                          Text(
+                            '${_progress.toStringAsFixed(0)}% leído',
+                            style: Theme.of(context).textTheme.labelLarge,
+                          ),
+                          const SizedBox(width: 12),
+                          Text('Sesión: $_readingTimeLabel'),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-                actions: [
-                  IconButton(
-                    icon: const Icon(Icons.home_outlined),
-                    tooltip: 'Biblioteca',
-                    onPressed: () => context.go('/'),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.save_outlined),
-                    tooltip: 'Guardar progreso',
-                    onPressed: _saveProgress,
-                  ),
-                  PopupMenuButton<_ReaderTool>(
-                    tooltip: 'Herramientas de lectura',
-                    icon: const Icon(Icons.handyman_outlined),
-                    onSelected: (tool) {
-                      switch (tool) {
-                        case _ReaderTool.search:
-                          _toggleSearch();
-                        case _ReaderTool.claude:
-                          _showClaudeChat(null);
-                        case _ReaderTool.toc:
-                          _showToc();
-                        case _ReaderTool.settings:
-                          _showSettings();
-                        case _ReaderTool.audio:
-                          _startAudioRucio();
-                      }
-                    },
-                    itemBuilder: (context) => [
-                      if (Platform.isWindows && !_isLoading)
+                  actions: [
+                    IconButton(
+                      icon: const Icon(Icons.home_outlined),
+                      tooltip: 'Biblioteca',
+                      onPressed: () => context.go('/'),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.save_outlined),
+                      tooltip: 'Guardar progreso',
+                      onPressed: _saveProgress,
+                    ),
+                    PopupMenuButton<_ReaderTool>(
+                      tooltip: 'Herramientas de lectura',
+                      icon: const Icon(Icons.handyman_outlined),
+                      onSelected: (tool) {
+                        switch (tool) {
+                          case _ReaderTool.search:
+                            _toggleSearch();
+                          case _ReaderTool.claude:
+                            _showClaudeChat(null);
+                          case _ReaderTool.toc:
+                            _showToc();
+                          case _ReaderTool.settings:
+                            _showSettings();
+                          case _ReaderTool.audio:
+                            _startAudioRucio();
+                        }
+                      },
+                      itemBuilder: (context) => [
+                        if ((Platform.isWindows || Platform.isAndroid) &&
+                            !_isLoading)
+                          const PopupMenuItem(
+                            value: _ReaderTool.audio,
+                            child: ListTile(
+                              leading: Icon(Icons.headphones_outlined),
+                              title: Text('Iniciar Audiorucio'),
+                            ),
+                          ),
                         const PopupMenuItem(
-                          value: _ReaderTool.audio,
+                          value: _ReaderTool.search,
                           child: ListTile(
-                            leading: Icon(Icons.headphones_outlined),
-                            title: Text('Iniciar Audiorucio'),
+                            leading: Icon(Icons.search),
+                            title: Text('Buscar en el libro'),
                           ),
                         ),
-                      const PopupMenuItem(
-                        value: _ReaderTool.search,
-                        child: ListTile(
-                          leading: Icon(Icons.search),
-                          title: Text('Buscar en el libro'),
+                        const PopupMenuItem(
+                          value: _ReaderTool.claude,
+                          child: ListTile(
+                            leading: Icon(Icons.auto_awesome_outlined),
+                            title: Text('Historial de Claude'),
+                          ),
                         ),
-                      ),
-                      const PopupMenuItem(
-                        value: _ReaderTool.claude,
-                        child: ListTile(
-                          leading: Icon(Icons.auto_awesome_outlined),
-                          title: Text('Historial de Claude'),
+                        const PopupMenuItem(
+                          value: _ReaderTool.toc,
+                          child: ListTile(
+                            leading: Icon(Icons.list),
+                            title: Text('Índice'),
+                          ),
                         ),
-                      ),
-                      const PopupMenuItem(
-                        value: _ReaderTool.toc,
-                        child: ListTile(
-                          leading: Icon(Icons.list),
-                          title: Text('Índice'),
+                        const PopupMenuItem(
+                          value: _ReaderTool.settings,
+                          child: ListTile(
+                            leading: Icon(Icons.settings),
+                            title: Text('Ajustes de lectura'),
+                          ),
                         ),
-                      ),
-                      const PopupMenuItem(
-                        value: _ReaderTool.settings,
-                        child: ListTile(
-                          leading: Icon(Icons.settings),
-                          title: Text('Ajustes de lectura'),
-                        ),
-                      ),
-                    ],
+                      ],
+                    ),
+                  ],
+                )
+              : null,
+          body: Stack(
+            key: _readerViewportKey,
+            fit: StackFit.expand,
+            children: [
+              if (_loadError != null)
+                Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text(_loadError!, textAlign: TextAlign.center),
                   ),
-                ],
-              )
-            : null,
-        body: Stack(
-          key: _readerViewportKey,
-          fit: StackFit.expand,
-          children: [
-            if (_loadError != null)
-              Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Text(_loadError!, textAlign: TextAlign.center),
-                ),
-              )
-            else if (_webViewController != null)
+                )
+              else if (_webViewController != null)
+                Positioned(
+                  left: 0,
+                  top: 0,
+                  right: _audioReaderSize == null ? 0 : null,
+                  bottom: _audioReaderSize == null ? 0 : null,
+                  width: _audioReaderSize?.width,
+                  height: _audioReaderSize?.height,
+                  child: _webViewController!.buildView(),
+                )
+              else
+                const Center(child: CircularProgressIndicator()),
+              if (_isLoading) const Center(child: CircularProgressIndicator()),
               Positioned(
                 left: 0,
-                top: 0,
-                right: _audioReaderSize == null ? 0 : null,
-                bottom: _audioReaderSize == null ? 0 : null,
-                width: _audioReaderSize?.width,
-                height: _audioReaderSize?.height,
-                child: _webViewController!.buildView(),
-              )
-            else
-              const Center(child: CircularProgressIndicator()),
-            if (_isLoading) const Center(child: CircularProgressIndicator()),
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: ClipRRect(
-                borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(2),
-                ),
-                child: LinearProgressIndicator(
-                  value: _progress / 100,
-                  minHeight: 3,
+                right: 0,
+                bottom: 0,
+                child: ClipRRect(
+                  borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(2),
+                  ),
+                  child: LinearProgressIndicator(
+                    value: _progress / 100,
+                    minHeight: 3,
+                  ),
                 ),
               ),
-            ),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: IgnorePointer(
-                ignoring: !_showSearch,
-                child: AnimatedSlide(
-                  duration: const Duration(milliseconds: 250),
-                  curve: Curves.easeOutCubic,
-                  offset: _showSearch ? Offset.zero : const Offset(-1.1, 0),
-                  child: SizedBox(
-                    width: isMobile ? screenWidth * 0.92 : 400,
-                    child: Material(
-                      color: const Color(0xFF1A1827),
-                      elevation: 12,
-                      child: SearchPanel(
-                        key: _searchPanelKey,
-                        initialQuery: _searchQuery,
-                        focusNode: _searchFocusNode,
-                        onSearch: _onSearchChanged,
-                        onResultTap: _onSearchResultTap,
-                        onClose: _toggleSearch,
+              Align(
+                alignment: Alignment.centerLeft,
+                child: IgnorePointer(
+                  ignoring: !_showSearch,
+                  child: AnimatedSlide(
+                    duration: const Duration(milliseconds: 250),
+                    curve: Curves.easeOutCubic,
+                    offset: _showSearch ? Offset.zero : const Offset(-1.1, 0),
+                    child: SizedBox(
+                      width: isMobile ? screenWidth * 0.92 : 400,
+                      child: Material(
+                        color: const Color(0xFF1A1827),
+                        elevation: 12,
+                        child: SearchPanel(
+                          key: _searchPanelKey,
+                          initialQuery: _searchQuery,
+                          focusNode: _searchFocusNode,
+                          onSearch: _onSearchChanged,
+                          onResultTap: _onSearchResultTap,
+                          onClose: _toggleSearch,
+                        ),
                       ),
                     ),
                   ),
                 ),
               ),
-            ),
-            if (_audioSession != null)
-              Positioned.fill(
-                child: AudioRucioPlayer(
-                  session: _audioSession!,
-                  onExit: () {
-                    unawaited(
-                      _webViewController!.runJavaScript('closeAudioReader()'),
-                    );
-                    setState(() {
-                      _audioSession = null;
-                      _audioReaderSize = null;
-                    });
-                  },
+              if (_audioSession != null)
+                Positioned.fill(
+                  child: AudioRucioPlayer(
+                    session: _audioSession!,
+                    onExit: _exitAudioRucio,
+                  ),
                 ),
-              ),
-          ],
+            ],
+          ),
         ),
       ),
     );

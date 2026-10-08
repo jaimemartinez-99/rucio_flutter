@@ -10,6 +10,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/audio_page.dart';
 import '../models/book.dart';
 import '../services/audio_cache_service.dart';
+import '../services/android_audio_playback.dart';
+import '../services/audio_media_handler.dart';
 import '../services/audio_playback.dart';
 import '../services/google_tts_service.dart';
 
@@ -62,10 +64,16 @@ class AudioRucioController extends ChangeNotifier {
         if (_closed) return;
         error = message;
         isPlaying = false;
+        _playRequested = false;
         _cancelPreload();
         notifyListeners();
       }),
     ]);
+    if (player case final AndroidAudioPlayback androidPlayer) {
+      _subscriptions.add(
+        androidPlayer.interruptions.listen((_) => unawaited(pause())),
+      );
+    }
   }
 
   final AudioSession session;
@@ -89,6 +97,7 @@ class AudioRucioController extends ChangeNotifier {
   bool _closed = false;
   bool _busy = true;
   bool _loaded = false;
+  bool _playRequested = false;
   String? _activePath;
   AudioVoice voice = AudioVoice.standard;
   Duration position = Duration.zero;
@@ -103,6 +112,8 @@ class AudioRucioController extends ChangeNotifier {
   AudioPage? get page => _index < 0 ? null : _history[_index];
   bool get isBusy => _busy;
   bool get isConfigured => tts.isConfigured;
+  bool get isClosed => _closed;
+  bool get wantsPlayback => _playRequested;
   String get _resumeKey =>
       'audiorucio.resume.${cache.key(session.userId, session.bookId, '', AudioVoice.standard)}';
 
@@ -258,6 +269,7 @@ class AudioRucioController extends ChangeNotifier {
       if (!_closed) {
         error = _message(failure);
         isPlaying = false;
+        _playRequested = false;
         _cancelPreload();
         try {
           await player.pause();
@@ -332,26 +344,40 @@ class AudioRucioController extends ChangeNotifier {
     cacheBytes = await cache.sizeBytes();
     if (_closed) return;
     finished = false;
-    if (autoplay) {
+    if (autoplay && _playRequested) {
       isPlaying = true;
       await player.resume();
       if (_closed) return;
     }
   }
 
-  Future<void> togglePlayback() => _run(() async {
+  Future<void> togglePlayback() => _playRequested ? pause() : play();
+
+  Future<void> pause() async {
+    if (_closed) return;
+    _playRequested = false;
+    isPlaying = false;
+    _completionPending = false;
+    _cancelPreload();
+    notifyListeners();
+    await player.pause();
+    if (!_closed) _saveSoon();
+  }
+
+  Future<void> play() => _run(() async {
+    if (_playRequested) return;
+    _playRequested = true;
+    notifyListeners();
     if (page == null) {
       final first = await session.loadPage(session.initialCfi);
-      if (_closed || first == null) return;
+      if (_closed || first == null) {
+        _playRequested = false;
+        return;
+      }
       _history.add(first);
       _index = 0;
     }
-    if (isPlaying) {
-      isPlaying = false;
-      _completionPending = false;
-      _cancelPreload();
-      await player.pause();
-    } else if (!_loaded) {
+    if (!_loaded) {
       await _activate(page!, autoplay: true, offset: position);
     } else {
       if (finished) {
@@ -359,8 +385,10 @@ class AudioRucioController extends ChangeNotifier {
         await player.seek(position);
         finished = false;
       }
-      isPlaying = true;
-      await player.resume();
+      if (_playRequested) {
+        isPlaying = true;
+        await player.resume();
+      }
     }
   });
 
@@ -395,6 +423,7 @@ class AudioRucioController extends ChangeNotifier {
       if (cfi == null) {
         finished = true;
         isPlaying = false;
+        _playRequested = false;
         position = duration;
         return false;
       }
@@ -403,6 +432,7 @@ class AudioRucioController extends ChangeNotifier {
       if (next == null || next.startCfi == page?.startCfi) {
         finished = true;
         isPlaying = false;
+        _playRequested = false;
         return false;
       }
       _history.add(next);
@@ -445,7 +475,7 @@ class AudioRucioController extends ChangeNotifier {
     );
     finished = finished && position >= duration;
     await player.seek(position);
-    if (autoplay && !finished && !_closed) {
+    if (autoplay && _playRequested && !finished && !_closed) {
       isPlaying = true;
       await player.resume();
     }
@@ -479,6 +509,7 @@ class AudioRucioController extends ChangeNotifier {
     _cancelPreload();
     await player.stop();
     isPlaying = false;
+    _playRequested = false;
     _loaded = false;
     _activePath = null;
     await cache.clear();
@@ -513,6 +544,8 @@ class AudioRucioController extends ChangeNotifier {
     if (_closed) return;
     _closed = true;
     isPlaying = false;
+    _playRequested = false;
+    notifyListeners();
     _cancelPreload();
     _cancelToken?.cancel();
     _saveTimer?.cancel();
@@ -538,6 +571,9 @@ final audioRucioProvider = ChangeNotifierProvider.autoDispose
         cache: ref.read(audioCacheServiceProvider),
         player: ref.read(audioPlaybackFactoryProvider)(),
       );
+      final handler = ref.read(audioMediaHandlerProvider);
+      handler?.attach(controller);
+      ref.onDispose(() => handler?.detach(controller));
       unawaited(controller.initialize());
       return controller;
     });

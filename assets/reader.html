@@ -313,11 +313,19 @@
       audioRendition.hooks.content.register(applyContentStyles);
       audioRendition.attachTo(audioContainer);
       var shadow = audioRendition;
+      shadow.q.tick = function(callback) { return setTimeout(callback, 0); };
+      shadow.reportLocation = function() {
+        return shadow.q.enqueue(async function() {
+          var location = shadow.located(await shadow.manager.currentLocation());
+          if (location && location.start && location.end) shadow.location = location;
+          return location;
+        });
+      };
       async function settle() {
         await Promise.all(shadow.getContents().map(function(contents) {
           return contents.document.fonts ? contents.document.fonts.ready : Promise.resolve();
         }));
-        await new Promise(function(resolve) { requestAnimationFrame(resolve); });
+        await new Promise(function(resolve) { setTimeout(resolve, 0); });
         return shadow.reportLocation();
       }
       return RucioAudio.createVisual({

@@ -600,7 +600,12 @@ void main() {
     },
   );
 
-  for (final size in [const Size(1280, 800), const Size(800, 600)]) {
+  for (final size in [
+    const Size(1280, 800),
+    const Size(800, 600),
+    const Size(390, 844),
+    const Size(360, 640),
+  ]) {
     testWidgets(
       'Desktop player renders and controls playback at ${size.width}',
       (tester) async {

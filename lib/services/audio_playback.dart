@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'android_audio_playback.dart';
 
 abstract class AudioPlayback {
   Stream<Duration> get positions;
@@ -66,5 +69,7 @@ class DesktopAudioPlayback implements AudioPlayback {
 }
 
 final audioPlaybackFactoryProvider = Provider<AudioPlayback Function()>((ref) {
-  return DesktopAudioPlayback.new;
+  return Platform.isAndroid
+      ? AndroidAudioPlayback.new
+      : DesktopAudioPlayback.new;
 });

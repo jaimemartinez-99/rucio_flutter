@@ -105,6 +105,10 @@ test('Visual pages respect both CFI boundaries, inline markup and cross-chapter 
     { start: position(1, 'p', 12), end: position(1, 'p', 25), atEnd: true }
   ];
   let current = 0;
+  book.locations = { percentageFromCfi: cfi => {
+    const index = locations.findIndex(location => location.start.cfi === cfi);
+    return index === 2 ? -1 : index / 2;
+  } };
   const window = new JSDOM('', { runScripts: 'outside-only' }).window;
   window.eval(epub);
   const reader = audio.createVisual({
@@ -116,9 +120,12 @@ test('Visual pages respect both CFI boundaries, inline markup and cross-chapter 
   assert.equal(first.paragraphs.map(p => p.text).join('\n\n'), 'Hello beautiful');
   assert.equal(first.startCfi, locations[0].start.cfi);
   assert.equal(first.endCfi, locations[0].end.cfi);
+  assert.equal(first.percentage, 0);
   const second = await reader.read(first.nextCfi);
+  assert.equal(second.percentage, 50);
   assert.equal(second.paragraphs.map(p => p.text).join('\n\n'), 'world. After.\n\nNext chapter');
   const last = await reader.read(second.nextCfi);
+  assert.equal(last.percentage, null);
   assert.equal(last.paragraphs[0].text, 'begins here.');
   assert.equal(last.nextCfi, null);
   for (const page of [first, second, last]) {

@@ -1,19 +1,26 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'config/supabase_config.dart';
 import 'router/app_router.dart';
+import 'services/audio_media_handler.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  final audioHandler = Platform.isAndroid
+      ? await AudioMediaHandler.initialize()
+      : null;
   await Supabase.initialize(
     url: SupabaseConfig.url,
     publishableKey: SupabaseConfig.anonKey,
   );
 
   runApp(
-    const ProviderScope(
+    ProviderScope(
+      overrides: [audioMediaHandlerProvider.overrideWithValue(audioHandler)],
       child: RucioApp(),
     ),
   );

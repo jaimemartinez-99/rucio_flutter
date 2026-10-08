@@ -93,12 +93,16 @@ class _AudioUsageDialogState extends ConsumerState<AudioUsageDialog> {
                 children: [
                   DropdownButtonFormField<String>(
                     initialValue: _month,
+                    isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Mes'),
                     items: [
                       for (final month in months)
                         DropdownMenuItem(
                           value: month,
-                          child: Text(_monthLabel(month)),
+                          child: Text(
+                            _monthLabel(month),
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
                     ],
                     onChanged: (month) {
@@ -124,7 +128,7 @@ class _AudioUsageDialogState extends ConsumerState<AudioUsageDialog> {
                     Text(
                       'Registro desde ${since.day.toString().padLeft(2, '0')}/'
                       '${since.month.toString().padLeft(2, '0')}/${since.year} '
-                      '· Este PC · Mes según la hora local',
+                      '· Este dispositivo · Mes según la hora local',
                     ),
                   const SizedBox(height: 8),
                   const Text(

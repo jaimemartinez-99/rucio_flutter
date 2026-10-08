@@ -2,7 +2,7 @@
 
 ## Audiorucio
 
-Windows incluye **Iniciar Audiorucio** en las herramientas y ajustes del lector. Abre un reproductor con portada, texto seleccionable, las voces Standard-H y Autonoe, pausa, saltos de −5/+15 segundos y volumen. El audio utiliza una caché local de hasta 500 MiB. La configuración, las pruebas y el alcance de la siguiente iteración de highlights están en [Audiorucio para Windows](audiorucio.md).
+Windows y Android incluyen **Iniciar Audiorucio** en las herramientas y ajustes del lector. Abre un reproductor con portada, texto seleccionable, las voces Standard-H y Autonoe, pausa, saltos de −5/+15 segundos y volumen. Android permite seguir escuchando con la aplicación minimizada o la pantalla apagada, con controles multimedia del sistema. El audio utiliza una caché local de hasta 500 MiB por dispositivo. La configuración, las pruebas y el alcance de la siguiente iteración de highlights están en [Audiorucio](audiorucio.md).
 
 Windows, Android e iOS usan `ReaderScreen`: selección de texto, tipos de highlight, notas, Vocablingo y definiciones, Claude, búsqueda, ajustes y progreso se gestionan en la misma pantalla.
 

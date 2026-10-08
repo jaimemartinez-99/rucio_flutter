@@ -181,6 +181,7 @@
         if (paragraphs.length) {
           var page = {
             startCfi: location.start.cfi, endCfi: location.end.cfi,
+            percentage: bookPercentage(location.start.cfi),
             nextCfi: nextCfi, href: location.start.href, paragraphs: paragraphs
           };
           pages.set(cfi, page);
@@ -197,6 +198,10 @@
         return result;
       }
     };
+    function bookPercentage(cfi) {
+      var value = options.book.locations && options.book.locations.percentageFromCfi(cfi);
+      return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.min(100, value * 100) : null;
+    }
   }
   return { create: create, createVisual: createVisual, extract: extract };
 });

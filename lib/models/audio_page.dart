@@ -37,11 +37,13 @@ class AudioPage {
     required this.href,
     required this.paragraphs,
     this.nextCfi,
+    this.percentage,
   });
 
   final String startCfi;
   final String endCfi;
   final String? nextCfi;
+  final double? percentage;
   final String href;
   final List<AudioParagraph> paragraphs;
 
@@ -76,6 +78,7 @@ class AudioPage {
     startCfi: json['startCfi'] as String,
     endCfi: json['endCfi'] as String,
     nextCfi: json['nextCfi'] as String?,
+    percentage: (json['percentage'] as num?)?.toDouble(),
     href: json['href'] as String? ?? '',
     paragraphs: (json['paragraphs'] as List<dynamic>)
         .map((item) => AudioParagraph.fromJson(item as Map<String, dynamic>))
