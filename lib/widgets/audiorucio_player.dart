@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/audio_page.dart';
 import '../providers/audiorucio_provider.dart';
+import 'audio_usage_dialog.dart';
 
 class AudioRucioPlayer extends ConsumerWidget {
   const AudioRucioPlayer({
@@ -132,6 +133,14 @@ class AudioRucioPlayer extends ConsumerWidget {
                       ),
                     ),
                     const Spacer(),
+                    IconButton(
+                      tooltip: 'Consumo mensual',
+                      onPressed: () => showDialog<void>(
+                        context: context,
+                        builder: (_) => const AudioUsageDialog(),
+                      ),
+                      icon: const Icon(Icons.payments_outlined),
+                    ),
                     IconButton(
                       tooltip: 'Conectar Google Cloud',
                       onPressed: audio.isBusy

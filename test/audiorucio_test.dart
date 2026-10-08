@@ -462,16 +462,16 @@ void main() {
               audioCacheServiceProvider.overrideWithValue(MemoryAudioCache()),
               audioPlaybackFactoryProvider.overrideWithValue(() => player),
             ],
-            child: MaterialApp(
-              theme: ThemeData(
-                fontFamily: preview ? 'Preview' : null,
-                useMaterial3: true,
-                brightness: Brightness.dark,
-                colorSchemeSeed: const Color(0xFFF2A65A),
-              ),
-              home: RepaintBoundary(
-                key: key,
-                child: AudioRucioPlayer(
+            child: RepaintBoundary(
+              key: key,
+              child: MaterialApp(
+                theme: ThemeData(
+                  fontFamily: preview ? 'Preview' : null,
+                  useMaterial3: true,
+                  brightness: Brightness.dark,
+                  colorSchemeSeed: const Color(0xFFF2A65A),
+                ),
+                home: AudioRucioPlayer(
                   session: audioSession,
                   onExit: () => exited = true,
                 ),
@@ -485,7 +485,8 @@ void main() {
         expect(find.text('El jardín de los caminos'), findsWidgets);
         expect(find.text('Texto del fragmento 0.'), findsOneWidget);
         expect(player.playing, isTrue);
-        if (preview && size.width == 1280) {
+        Future<void> capture(String path) async {
+          if (!preview || size.width != 1280) return;
           await tester.runAsync(() async {
             final boundary =
                 key.currentContext!.findRenderObject()!
@@ -493,12 +494,12 @@ void main() {
             final image = await boundary.toImage();
             final data = await image.toByteData(format: ui.ImageByteFormat.png);
             await Directory('build').create(recursive: true);
-            await File(
-              'build/audiorucio-preview.png',
-            ).writeAsBytes(data!.buffer.asUint8List());
+            await File(path).writeAsBytes(data!.buffer.asUint8List());
             image.dispose();
           });
         }
+
+        await capture('build/audiorucio-preview.png');
         await tester.tap(find.byIcon(Icons.pause_rounded));
         await tester.pumpAndSettle();
         expect(player.playing, isFalse);
@@ -508,6 +509,15 @@ void main() {
         await tester.tap(find.byTooltip('Atrasar 5 segundos'));
         await tester.pumpAndSettle();
         expect(player.current.inSeconds, 10);
+        await tester.tap(find.byTooltip('Consumo mensual'));
+        await tester.pumpAndSettle();
+        expect(
+          find.text('Coste estimado tras el tramo gratuito'),
+          findsOneWidget,
+        );
+        await capture('build/audiorucio-usage-preview.png');
+        await tester.tap(find.text('Cerrar'));
+        await tester.pumpAndSettle();
         await tester.tap(find.byTooltip('Volver al libro'));
         await tester.pumpAndSettle();
         expect(exited, isTrue);

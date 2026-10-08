@@ -5,6 +5,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/audio_page.dart';
+import 'audio_usage_service.dart';
 
 class AudioRucioException implements Exception {
   const AudioRucioException(this.message);
@@ -16,9 +17,12 @@ class AudioRucioException implements Exception {
 }
 
 class GoogleTtsService {
-  GoogleTtsService({Dio? dio}) : _dio = dio ?? Dio();
+  GoogleTtsService({Dio? dio, AudioUsageService? usage})
+    : _dio = dio ?? Dio(),
+      _usage = usage ?? AudioUsageService();
 
   final Dio _dio;
+  final AudioUsageService _usage;
   String apiKey = const String.fromEnvironment('GOOGLE_CLOUD_TTS_API_KEY');
 
   bool get isConfigured => apiKey.trim().isNotEmpty;
@@ -36,7 +40,20 @@ class GoogleTtsService {
     if (text.trim().isEmpty || utf8.encode(text).length > 5000) {
       throw const AudioRucioException('El fragmento de lectura no es válido.');
     }
+    if (cancelToken?.isCancelled ?? false) throw cancelToken!.cancelError!;
+    final AudioUsageRequest request;
     try {
+      request = await _usage.begin(text, voice);
+    } catch (_) {
+      throw const AudioRucioException(
+        'No se pudo registrar el consumo. Revisa el almacenamiento local e inténtalo de nuevo.',
+      );
+    }
+    try {
+      if (cancelToken?.isCancelled ?? false) {
+        await _usage.finish(request, generated: false);
+        throw cancelToken!.cancelError!;
+      }
       final response = await _dio.post<Map<String, dynamic>>(
         'https://texttospeech.googleapis.com/v1/text:synthesize',
         options: Options(
@@ -51,6 +68,7 @@ class GoogleTtsService {
           'audioConfig': {'audioEncoding': 'MP3'},
         },
       );
+      await _usage.finish(request, generated: true);
       final content = response.data?['audioContent'];
       if (content is! String || content.isEmpty) {
         throw const AudioRucioException('Google Cloud no devolvió audio.');
@@ -61,6 +79,10 @@ class GoogleTtsService {
       }
       return bytes;
     } on DioException catch (error) {
+      final status = error.response?.statusCode;
+      if (status != null && status >= 400 && status < 500) {
+        await _usage.finish(request, generated: false);
+      }
       if (CancelToken.isCancel(error)) rethrow;
       final message = switch (error.response?.statusCode) {
         400 => 'Revisa la clave de Google Cloud y la disponibilidad de la voz.',
@@ -78,5 +100,5 @@ class GoogleTtsService {
 }
 
 final googleTtsServiceProvider = Provider<GoogleTtsService>((ref) {
-  return GoogleTtsService();
+  return GoogleTtsService(usage: ref.read(audioUsageServiceProvider));
 });

@@ -175,6 +175,15 @@ void main() {
         );
         expect(find.text('Libro de prueba'), findsWidgets);
         expect(find.text('Conectar'), findsOneWidget);
+        await tester.tap(find.byTooltip('Consumo mensual'));
+        await tester.pumpAndSettle();
+        expect(
+          find.text('Coste estimado tras el tramo gratuito'),
+          findsOneWidget,
+        );
+        expect(find.text('0 caracteres generados'), findsNWidgets(2));
+        await tester.tap(find.text('Cerrar'));
+        await tester.pumpAndSettle();
         await tester.tap(find.byTooltip('Volver al libro'));
         await tester.pumpAndSettle();
         expect(find.byType(AudioRucioPlayer), findsNothing);
