@@ -9,6 +9,8 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/epub_footnote.dart';
+import '../models/audio_page.dart';
+import '../providers/audiorucio_provider.dart';
 import '../providers/highlights_provider.dart';
 import '../providers/notes_provider.dart';
 import '../providers/progress_provider.dart';
@@ -16,6 +18,8 @@ import '../providers/settings_provider.dart';
 import '../services/reader_content_loader.dart';
 import '../services/reader_webview.dart';
 import '../services/vocablingo_service.dart';
+import '../services/google_tts_service.dart';
+import '../widgets/audiorucio_player.dart';
 import '../widgets/claude_chat_sheet.dart';
 import '../widgets/epub_footnote_dialog.dart';
 import '../widgets/highlight_type_picker.dart';
@@ -60,6 +64,9 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   final FocusNode _readerFocusNode = FocusNode();
   final _footnote = ValueNotifier<EpubFootnote?>(null);
   bool _footnoteDialogOpen = false;
+  AudioSession? _audioSession;
+  int _audioRequestId = 0;
+  final Map<int, Completer<AudioPage?>> _audioRequests = {};
 
   @override
   void initState() {
@@ -111,6 +118,20 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     try {
       final message = event.message;
       switch (event.channel) {
+        case 'AudioPage':
+          final data = jsonDecode(message) as Map<String, dynamic>;
+          final request = _audioRequests.remove(data['requestId']);
+          if (request == null) return;
+          if (data['error'] is String) {
+            request.completeError(AudioRucioException(data['error'] as String));
+          } else {
+            final page = data['page'];
+            request.complete(
+              page == null
+                  ? null
+                  : AudioPage.fromJson(page as Map<String, dynamic>),
+            );
+          }
         case 'ReaderReady':
           unawaited(_onReaderReady());
         case 'Relocated':
@@ -150,7 +171,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
         case 'Footnote':
           _onFootnote(message);
         case 'ToggleUI':
-          _toggleAppBar();
+          if (_audioSession == null) _toggleAppBar();
         case 'ReaderError':
           _setLoadError(message);
       }
@@ -491,6 +512,12 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
         builder: (ctx) => SizedBox(
           width: 400,
           child: SettingsPanel(
+            onStartAudio: Platform.isWindows && !_isLoading
+                ? () {
+                    Navigator.pop(ctx);
+                    _startAudioRucio();
+                  }
+                : null,
             onCssChanged: (css) {
               controller.runJavaScript('setStyles(${jsonEncode(css)})');
             },
@@ -524,6 +551,61 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
         ),
       );
     }
+  }
+
+  Future<AudioPage?> _requestAudioPage(String? cfi) async {
+    final controller = _webViewController;
+    if (!mounted || controller == null) {
+      throw const AudioRucioException('El lector se ha cerrado.');
+    }
+    final id = ++_audioRequestId;
+    final completer = Completer<AudioPage?>();
+    _audioRequests[id] = completer;
+    try {
+      final response = completer.future.timeout(const Duration(seconds: 20));
+      unawaited(
+        controller
+            .runJavaScript('requestAudioPage($id, ${jsonEncode(cfi)})')
+            .catchError((Object error) {
+              if (!completer.isCompleted) {
+                completer.completeError(
+                  const AudioRucioException(
+                    'No se pudo leer el texto del libro.',
+                  ),
+                );
+              }
+            }),
+      );
+      return await response;
+    } finally {
+      _audioRequests.remove(id);
+    }
+  }
+
+  void _startAudioRucio() {
+    if (_isLoading || _webViewController == null || _audioSession != null) {
+      return;
+    }
+    if (_showSearch) _closeSearch();
+    final book = _readerContent?.book;
+    setState(() {
+      _audioSession = AudioSession(
+        userId: book?.userId ?? 'local',
+        bookId: widget.bookId,
+        initialCfi:
+            _currentCfi ?? widget.initialCfi ?? _progressNotifier.lastCfi,
+        book: book,
+        readerCfi: () => _currentCfi,
+        loadPage: _requestAudioPage,
+        onPageChanged: (page) async {
+          if (mounted) {
+            await _webViewController?.runJavaScript(
+              'goToCfi(${jsonEncode(page.startCfi)})',
+            );
+          }
+        },
+      );
+    });
   }
 
   void _toggleSearch() {
@@ -589,6 +671,10 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
 
   @override
   void dispose() {
+    for (final request in _audioRequests.values) {
+      if (!request.isCompleted) request.complete(null);
+    }
+    _audioRequests.clear();
     unawaited(_progressNotifier.flushProgress());
     unawaited(_readerContent?.dispose());
     unawaited(_messageSubscription?.cancel());
@@ -612,7 +698,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
       focusNode: _readerFocusNode,
       autofocus: true,
       onKeyEvent: (_, event) {
-        if (_showSearch || event is! KeyDownEvent) {
+        if (_showSearch || _audioSession != null || event is! KeyDownEvent) {
           return KeyEventResult.ignored;
         }
         if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
@@ -627,7 +713,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
       },
       child: Scaffold(
         resizeToAvoidBottomInset: false,
-        appBar: _showChrome
+        appBar: _showChrome && _audioSession == null
             ? AppBar(
                 bottom: PreferredSize(
                   preferredSize: const Size.fromHeight(28),
@@ -669,31 +755,41 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                           _showToc();
                         case _ReaderTool.settings:
                           _showSettings();
+                        case _ReaderTool.audio:
+                          _startAudioRucio();
                       }
                     },
-                    itemBuilder: (context) => const [
-                      PopupMenuItem(
+                    itemBuilder: (context) => [
+                      if (Platform.isWindows && !_isLoading)
+                        const PopupMenuItem(
+                          value: _ReaderTool.audio,
+                          child: ListTile(
+                            leading: Icon(Icons.headphones_outlined),
+                            title: Text('Iniciar Audiorucio'),
+                          ),
+                        ),
+                      const PopupMenuItem(
                         value: _ReaderTool.search,
                         child: ListTile(
                           leading: Icon(Icons.search),
                           title: Text('Buscar en el libro'),
                         ),
                       ),
-                      PopupMenuItem(
+                      const PopupMenuItem(
                         value: _ReaderTool.claude,
                         child: ListTile(
                           leading: Icon(Icons.auto_awesome_outlined),
                           title: Text('Historial de Claude'),
                         ),
                       ),
-                      PopupMenuItem(
+                      const PopupMenuItem(
                         value: _ReaderTool.toc,
                         child: ListTile(
                           leading: Icon(Icons.list),
                           title: Text('Índice'),
                         ),
                       ),
-                      PopupMenuItem(
+                      const PopupMenuItem(
                         value: _ReaderTool.settings,
                         child: ListTile(
                           leading: Icon(Icons.settings),
@@ -759,6 +855,18 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                 ),
               ),
             ),
+            if (_audioSession != null)
+              Positioned.fill(
+                child: AudioRucioPlayer(
+                  session: _audioSession!,
+                  onExit: () {
+                    setState(() {
+                      _audioSession = null;
+                      _showChrome = true;
+                    });
+                  },
+                ),
+              ),
           ],
         ),
       ),
@@ -766,4 +874,4 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   }
 }
 
-enum _ReaderTool { search, claude, toc, settings }
+enum _ReaderTool { search, claude, toc, settings, audio }

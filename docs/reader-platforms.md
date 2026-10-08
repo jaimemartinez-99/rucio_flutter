@@ -1,5 +1,9 @@
 # Lector compartido
 
+## Audiorucio
+
+Windows incluye **Iniciar Audiorucio** en las herramientas y ajustes del lector. Abre un reproductor con portada, texto seleccionable, las voces Standard-H y Autonoe, pausa, saltos de −5/+15 segundos y volumen. El audio utiliza una caché local de hasta 500 MiB. La configuración, las pruebas y el alcance de la siguiente iteración de highlights están en [Audiorucio para Windows](audiorucio.md).
+
 Windows, Android e iOS usan `ReaderScreen`: selección de texto, tipos de highlight, notas, Vocablingo y definiciones, Claude, búsqueda, ajustes y progreso se gestionan en la misma pantalla.
 
 `ReaderWebView` adapta la comunicación y el componente nativo: WebView2 en Windows y `webview_flutter` en móvil. Los mensajes JavaScript se procesan en una sola implementación. `ReaderContentLoader` prepara el mismo HTML y utiliza la caché EPUB en ambas plataformas.

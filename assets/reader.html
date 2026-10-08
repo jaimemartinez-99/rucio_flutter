@@ -27,6 +27,7 @@
   <script>{{{JSZIP_SOURCE}}}</script>
   <script>{{{EPUBJS_SOURCE}}}</script>
   <script>{{{FOOTNOTES_SOURCE}}}</script>
+  <script>{{{AUDIORUCIO_SOURCE}}}</script>
   <script>
     var book, rendition;
     var readerReady = false;
@@ -288,6 +289,18 @@
       });
     }
     function toggleUI() { postToFlutter('ToggleUI', ''); }
+    async function requestAudioPage(requestId, cfi) {
+      try {
+        var audio = RucioAudio.create({
+          book: book,
+          toRange: function(cfi, doc) { return new ePub.CFI(cfi).toRange(doc); }
+        });
+        var page = await audio.read(cfi);
+        postToFlutter('AudioPage', JSON.stringify({ requestId: requestId, page: page }));
+      } catch (error) {
+        postToFlutter('AudioPage', JSON.stringify({ requestId: requestId, error: 'No se pudo extraer el texto de esta posición.' }));
+      }
+    }
     function searchBook(query) {
       var generation = ++searchGeneration;
       if (!book || !query || query.trim().length < 2) {

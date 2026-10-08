@@ -8,10 +8,12 @@ class SettingsPanel extends ConsumerWidget {
     super.key,
     required this.onCssChanged,
     required this.onLayoutChanged,
+    this.onStartAudio,
   });
 
   final void Function(String css) onCssChanged;
   final ValueChanged<ReadingLayout> onLayoutChanged;
+  final VoidCallback? onStartAudio;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -21,6 +23,14 @@ class SettingsPanel extends ConsumerWidget {
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
       children: [
+        if (onStartAudio != null) ...[
+          FilledButton.icon(
+            onPressed: onStartAudio,
+            icon: const Icon(Icons.headphones_outlined),
+            label: const Text('Iniciar Audiorucio'),
+          ),
+          const SizedBox(height: 24),
+        ],
         Text('Reading settings', style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 24),
         const _SectionTitle(title: 'Color theme'),

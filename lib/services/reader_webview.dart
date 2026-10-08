@@ -54,6 +54,7 @@ class _MobileReaderWebView implements ReaderWebView {
       'ToggleUI',
       'ReaderError',
       'SearchResults',
+      'AudioPage',
     ]) {
       await _controller.addJavaScriptChannel(
         channel,
