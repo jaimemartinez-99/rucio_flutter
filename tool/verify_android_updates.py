@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import shutil
 import sys
 
@@ -14,8 +15,14 @@ def main():
     bucket = json.loads(request(key, f'bucket/{BUCKET}'))
     if bucket['public'] or bucket['file_size_limit'] != 52428800:
         raise RuntimeError('Configuración del bucket incorrecta.')
+    version, build = re.search(
+        r'^version: (\d+\.\d+\.\d+)\+(\d+)$',
+        (ROOT / 'pubspec.yaml').read_text(encoding='utf-8'), re.M,
+    ).groups()
     for user in configuration():
         release = json.loads(request(key, f'object/{BUCKET}/{user}/android/latest.json'))
+        if release['version'] != version or release['buildNumber'] != int(build):
+            raise RuntimeError('El manifiesto todavía no muestra la versión esperada. Espera a que se actualice la caché de Supabase y vuelve a comprobarlo.')
         for artifact in release['artifacts'].values():
             data = request(key, f'object/{BUCKET}/{user}/{artifact["path"]}')
             if len(data) != artifact['bytes'] or hashlib.sha256(data).hexdigest() != artifact['sha256']:
