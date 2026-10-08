@@ -65,6 +65,8 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   final _footnote = ValueNotifier<EpubFootnote?>(null);
   bool _footnoteDialogOpen = false;
   AudioSession? _audioSession;
+  final _readerViewportKey = GlobalKey();
+  Size? _audioReaderSize;
   int _audioRequestId = 0;
   final Map<int, Completer<AudioPage?>> _audioRequests = {};
 
@@ -588,6 +590,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     }
     if (_showSearch) _closeSearch();
     final book = _readerContent?.book;
+    _audioReaderSize = _readerViewportKey.currentContext?.size;
     setState(() {
       _audioSession = AudioSession(
         userId: book?.userId ?? 'local',
@@ -802,6 +805,8 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
               )
             : null,
         body: Stack(
+          key: _readerViewportKey,
+          fit: StackFit.expand,
           children: [
             if (_loadError != null)
               Center(
@@ -811,7 +816,15 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                 ),
               )
             else if (_webViewController != null)
-              _webViewController!.buildView()
+              Positioned(
+                left: 0,
+                top: 0,
+                right: _audioReaderSize == null ? 0 : null,
+                bottom: _audioReaderSize == null ? 0 : null,
+                width: _audioReaderSize?.width,
+                height: _audioReaderSize?.height,
+                child: _webViewController!.buildView(),
+              )
             else
               const Center(child: CircularProgressIndicator()),
             if (_isLoading) const Center(child: CircularProgressIndicator()),
@@ -860,9 +873,12 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                 child: AudioRucioPlayer(
                   session: _audioSession!,
                   onExit: () {
+                    unawaited(
+                      _webViewController!.runJavaScript('closeAudioReader()'),
+                    );
                     setState(() {
                       _audioSession = null;
-                      _showChrome = true;
+                      _audioReaderSize = null;
                     });
                   },
                 ),

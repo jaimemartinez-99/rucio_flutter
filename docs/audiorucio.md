@@ -1,6 +1,6 @@
 # Audiorucio para Windows
 
-Abre un libro y selecciona **Herramientas de lectura → Iniciar Audiorucio**, o utiliza el botón del mismo nombre en **Ajustes de lectura**. La vista muestra la portada, el título, el autor y el texto del fragmento que se escucha. **Volver al libro** detiene el audio y recupera el lector.
+Abre un libro y selecciona **Herramientas de lectura → Iniciar Audiorucio**, o utiliza el botón del mismo nombre en **Ajustes de lectura**. La vista muestra la portada, el título, el autor y el texto de la página visible del lector. Al entrar siempre queda en pausa y no genera audio hasta que pulses reproducir. **Volver al libro** detiene el audio y recupera el lector en la página que se estaba escuchando.
 
 Incluye reproducción y pausa, retroceso de 5 segundos, avance de 15 segundos, barra de posición del fragmento, volumen y estas voces de español de España:
 
@@ -9,7 +9,9 @@ Incluye reproducción y pausa, retroceso de 5 segundos, avance de 15 segundos, b
 | Estándar | `es-ES-Standard-H` |
 | Premium | `es-ES-Chirp3-HD-Autonoe` |
 
-La narración continúa por fragmentos y capítulos desde la posición del lector. Los saltos temporales atraviesan los fragmentos de esta sesión. Al cambiar de voz se conserva la proporción reproducida del fragmento: la posición es aproximada porque las voces tienen duraciones distintas. El texto se actualiza por fragmento, sin seguimiento palabra por palabra.
+La narración usa la paginación real de epub.js, con el tamaño de letra, interlineado, márgenes y una o dos columnas configurados en el lector. Al terminar una página pasa automáticamente a la siguiente y mantiene sincronizada la posición de lectura. Una segunda vista oculta, con las mismas dimensiones y estilos, obtiene las páginas siguientes sin mover el lector durante la precarga. Las páginas sin texto se omiten.
+
+Mientras se reproduce, se prepara un único fragmento por adelantado. La precarga se cancela al pausar, cambiar de voz o salir; si el audio ya se generó, queda en la caché local. Si una página supera el límite de Google, su audio se divide internamente en partes de hasta 4500 bytes UTF-8 y se reproduce seguido, manteniendo el texto de la página completa en pantalla. La barra temporal corresponde a la parte de audio actual. Los saltos temporales atraviesan estas partes y páginas de la sesión. Al cambiar de voz se conserva la proporción reproducida de la parte: la posición es aproximada porque las voces tienen duraciones distintas. No hay seguimiento palabra por palabra.
 
 ## Conectar Google Cloud
 
@@ -23,7 +25,7 @@ Puedes utilizar tu cuenta de facturación existente para un proyecto nuevo:
 
 La clave introducida se conserva en memoria durante la sesión de la aplicación. No se guarda en preferencias, Supabase ni en los archivos de audio. Para desarrollo local también se admite `GOOGLE_CLOUD_TTS_API_KEY` dentro del `.env` ignorado por Git. Los comandos de ejecución y compilación mantienen `--dart-define-from-file=.env`.
 
-Google factura la generación del audio según su [tarifa de Text-to-Speech](https://cloud.google.com/text-to-speech/pricing). Cambiar de voz puede generar otra versión del mismo texto. No se genera el libro completo ni se anticipan fragmentos que todavía no has solicitado.
+Google factura la generación del audio según su [tarifa de Text-to-Speech](https://cloud.google.com/text-to-speech/pricing). Cambiar de voz puede generar otra versión del mismo texto. La precarga también cuenta como generación, aunque después no escuches ese fragmento; se incluye en el panel de consumo mensual. Solo se anticipa el siguiente fragmento mientras escuchas, sin generar el libro completo.
 
 ## Caché y posición
 
@@ -31,7 +33,7 @@ El audio MP3 se almacena en `audiorucio` dentro del directorio de soporte local 
 
 **Opciones de audio → Vaciar caché de audio** detiene la reproducción y libera esos archivos. Volver a escuchar un fragmento eliminado requiere generar audio de nuevo. Los fragmentos ya almacenados se pueden reproducir sin clave ni conexión, siempre que el EPUB esté abierto en el lector.
 
-La voz, el volumen y el punto temporal de escucha se guardan localmente. La posición del lector sigue usando el mecanismo de progreso existente. El punto temporal se recupera cuando el lector continúa en la misma posición; si se ha navegado a otra parte del libro, se respeta esa nueva posición.
+La voz, el volumen y el punto temporal de escucha se guardan localmente. La posición del lector sigue usando el mecanismo de progreso existente. Al volver a Audiorucio se recupera el punto temporal, en pausa, cuando coincide la página y su texto; si se ha navegado a otra parte del libro o ha cambiado la paginación, se respeta la nueva página.
 
 ## Consumo mensual
 
@@ -74,7 +76,9 @@ flutter test integration_test/desktop_audio_test.dart -d windows --dart-define-f
 flutter build windows --release --dart-define-from-file=.env
 ```
 
-Las pruebas automáticas cubren extracción con CFIs reales de epub.js, división por bytes UTF-8, transiciones de capítulos, reutilización y eliminación de caché, errores de Google, cambio de voz, saltos temporales, reanudación, cierre durante generación y disposición de la vista. Las pruebas de integración abren un EPUB en el WebView real de Windows, entran en Audiorucio, comprueban el texto y vuelven al libro; también reproducen un archivo silencioso local en el componente de audio nativo, sin contactar con Google.
+Las pruebas automáticas cubren extracción con CFIs reales de epub.js, límites de páginas y vistas que abarcan varios capítulos, división por bytes UTF-8, reproducción automática al completar cada página, precarga en curso sin duplicar solicitudes, cancelación al pausar, reutilización y eliminación de caché, errores de Google, cambio de voz, saltos temporales, reanudación en pausa y cierre durante generación.
+
+Las pruebas de integración abren un EPUB en el WebView real de Windows, entran en Audiorucio y vuelven al libro. Comparan los CFIs y el texto con las páginas del lector en distintos tamaños de letra, márgenes y vistas de una o dos columnas, y comprueban que la precarga no modifica el progreso ni pierde o repite texto. El reproductor nativo completa tres páginas seguidas con audio silencioso local, sin contactar con Google.
 
 El consumo se verifica con cambios de mes y año, peticiones concurrentes, caracteres Unicode, persistencia, tramos gratuitos, errores y cancelaciones, regeneración tras vaciar la caché y navegación por el historial. La integración de Windows también abre y cierra el panel de consumo.
 

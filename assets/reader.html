@@ -289,13 +289,49 @@
       });
     }
     function toggleUI() { postToFlutter('ToggleUI', ''); }
+    var audioReader = null, audioRendition = null, audioContainer = null;
+    function closeAudioReader() {
+      audioReader = null;
+      if (audioRendition) audioRendition.destroy();
+      if (audioContainer) audioContainer.remove();
+      audioRendition = null;
+      audioContainer = null;
+    }
+    function createAudioReader() {
+      var viewer = document.getElementById('viewer');
+      var bounds = viewer.getBoundingClientRect();
+      audioContainer = document.createElement('div');
+      audioContainer.style.cssText = 'position:fixed;left:-100000px;top:0;visibility:hidden;pointer-events:none;';
+      audioContainer.style.width = bounds.width + 'px';
+      audioContainer.style.height = bounds.height + 'px';
+      document.body.appendChild(audioContainer);
+      audioRendition = new ePub.Rendition(book, {
+        width: bounds.width, height: bounds.height, flow: 'paginated',
+        spread: rendition.settings.spread,
+        minSpreadWidth: rendition.settings.minSpreadWidth
+      });
+      audioRendition.hooks.content.register(applyContentStyles);
+      audioRendition.attachTo(audioContainer);
+      var shadow = audioRendition;
+      async function settle() {
+        await Promise.all(shadow.getContents().map(function(contents) {
+          return contents.document.fonts ? contents.document.fonts.ready : Promise.resolve();
+        }));
+        await new Promise(function(resolve) { requestAnimationFrame(resolve); });
+        return shadow.reportLocation();
+      }
+      return RucioAudio.createVisual({
+        book: book,
+        toRange: function(cfi, doc) { return new ePub.CFI(cfi).toRange(doc); },
+        display: async function(cfi) { await shadow.display(cfi); await settle(); },
+        next: async function() { await shadow.next(); await settle(); },
+        getLocation: async function() { await settle(); return shadow.currentLocation(); }
+      });
+    }
     async function requestAudioPage(requestId, cfi) {
       try {
-        var audio = RucioAudio.create({
-          book: book,
-          toRange: function(cfi, doc) { return new ePub.CFI(cfi).toRange(doc); }
-        });
-        var page = await audio.read(cfi);
+        if (!audioReader) audioReader = createAudioReader();
+        var page = await audioReader.read(cfi);
         postToFlutter('AudioPage', JSON.stringify({ requestId: requestId, page: page }));
       } catch (error) {
         postToFlutter('AudioPage', JSON.stringify({ requestId: requestId, error: 'No se pudo extraer el texto de esta posición.' }));

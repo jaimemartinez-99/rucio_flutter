@@ -29,6 +29,7 @@ class FakeAudioPlayback implements AudioPlayback {
   bool disposed = false;
   double volume = 0;
   int loads = 0;
+  bool completeOnResume = false;
 
   @override
   Stream<Duration> get positions => positionEvents.stream;
@@ -53,6 +54,10 @@ class FakeAudioPlayback implements AudioPlayback {
   @override
   Future<void> resume() async {
     playing = true;
+    if (completeOnResume) {
+      completeOnResume = false;
+      completionEvents.add(null);
+    }
   }
 
   @override
@@ -89,6 +94,7 @@ class FakeTts extends GoogleTtsService {
   final requests = <({String text, AudioVoice voice})>[];
   bool fail = false;
   Completer<Uint8List>? pending;
+  String? pendingText;
   CancelToken? token;
 
   @override
@@ -100,7 +106,9 @@ class FakeTts extends GoogleTtsService {
     requests.add((text: text, voice: voice));
     token = cancelToken;
     if (fail) throw const AudioRucioException('No se pudo generar la voz.');
-    return pending == null ? Uint8List.fromList([1, 2, 3]) : pending!.future;
+    return pending == null || (pendingText != null && text != pendingText)
+        ? Uint8List.fromList([1, 2, 3])
+        : pending!.future;
   }
 }
 
@@ -180,9 +188,166 @@ void main() {
     });
 
     test(
+      'Entering and selecting a voice stay paused without cloud requests',
+      () async {
+        await audio.initialize();
+        expect(audio.page!.startCfi, 'cfi-0');
+        expect(audio.isPlaying, isFalse);
+        expect(player.loads, 0);
+        expect(tts.requests, isEmpty);
+        await audio.changeVoice(AudioVoice.premium);
+        expect(tts.requests, isEmpty);
+        expect(player.playing, isFalse);
+      },
+    );
+
+    test(
+      'Preloading prepares one page without moving the reader and completion continues automatically',
+      () async {
+        final changed = <String>[];
+        await audio.close();
+        audio = AudioRucioController(
+          session: session(
+            changed: (page) async {
+              changed.add(page.startCfi);
+            },
+          ),
+          tts: tts,
+          cache: cache,
+          player: FakeAudioPlayback(),
+        );
+        player = audio.player as FakeAudioPlayback;
+        await audio.initialize();
+        await audio.togglePlayback();
+        await Future<void>.delayed(Duration.zero);
+        expect(tts.requests.map((r) => r.text), [page(0).text, page(1).text]);
+        expect(changed, ['cfi-0']);
+        player.completionEvents.add(null);
+        await Future<void>.delayed(Duration.zero);
+        expect(audio.page!.startCfi, 'cfi-1');
+        expect(audio.isPlaying, isTrue);
+        expect(changed, ['cfi-0', 'cfi-1']);
+        expect(tts.requests.where((r) => r.text == page(1).text).length, 1);
+        player.completionEvents.add(null);
+        await Future<void>.delayed(Duration.zero);
+        expect(audio.page!.startCfi, 'cfi-2');
+        player.completionEvents.add(null);
+        await Future<void>.delayed(Duration.zero);
+        expect(audio.finished, isTrue);
+        expect(audio.isPlaying, isFalse);
+      },
+    );
+
+    test(
+      'Completion during resume is processed after the player becomes ready',
+      () async {
+        await audio.initialize();
+        player.completeOnResume = true;
+        await audio.togglePlayback();
+        await Future<void>.delayed(Duration.zero);
+        expect(audio.page!.startCfi, 'cfi-1');
+        expect(audio.isPlaying, isTrue);
+      },
+    );
+
+    test(
+      'Advancing waits for an in-flight preload without generating the same audio twice',
+      () async {
+        tts.pending = Completer<Uint8List>();
+        tts.pendingText = page(1).text;
+        await audio.initialize();
+        await audio.togglePlayback();
+        await Future<void>.delayed(Duration.zero);
+        expect(tts.requests.length, 2);
+        player.completionEvents.add(null);
+        await Future<void>.delayed(Duration.zero);
+        expect(audio.isBusy, isTrue);
+        expect(tts.requests.length, 2);
+        tts.pending!.complete(Uint8List(3));
+        await Future<void>.delayed(Duration.zero);
+        expect(audio.page!.startCfi, 'cfi-1');
+        expect(audio.isPlaying, isTrue);
+        expect(
+          tts.requests.where((request) => request.text == page(1).text).length,
+          1,
+        );
+      },
+    );
+
+    test(
+      'Pausing cancels a pending preload without late playback or cache writes',
+      () async {
+        await audio.initialize();
+        await audio.togglePlayback();
+        await Future<void>.delayed(Duration.zero);
+        tts.pending = Completer<Uint8List>();
+        player.completionEvents.add(null);
+        await Future<void>.delayed(Duration.zero);
+        final token = tts.token!;
+        expect(tts.requests.last.text, page(2).text);
+        await audio.togglePlayback();
+        expect(token.isCancelled, isTrue);
+        tts.pending!.complete(Uint8List(3));
+        await Future<void>.delayed(Duration.zero);
+        expect(player.playing, isFalse);
+        expect(audio.page!.startCfi, 'cfi-1');
+        expect(cache.files.length, 2);
+      },
+    );
+
+    test(
+      'Long visual pages retain their text while audio parts stay within the byte limit',
+      () async {
+        final text = 'Árbol 日本語 🌙. ' * 900;
+        final large = AudioPage(
+          startCfi: 'cfi-0',
+          endCfi: 'end-0',
+          href: 'chapter',
+          paragraphs: [AudioParagraph(text: text, cfiRange: 'range')],
+        );
+        expect(large.speechParts.join(), text);
+        expect(large.speechParts.length, greaterThan(2));
+        expect(
+          large.speechParts.every((part) => utf8.encode(part).length <= 4500),
+          isTrue,
+        );
+        await audio.close();
+        audio = AudioRucioController(
+          session: AudioSession(
+            userId: 'user',
+            bookId: 'large',
+            initialCfi: 'cfi-0',
+            loadPage: (_) async => large,
+            onPageChanged: (_) async {},
+          ),
+          tts: tts,
+          cache: cache,
+          player: FakeAudioPlayback(),
+        );
+        player = audio.player as FakeAudioPlayback;
+        await audio.initialize();
+        await audio.togglePlayback();
+        for (var part = 1; part < large.speechParts.length; part++) {
+          player.completionEvents.add(null);
+          await Future<void>.delayed(Duration.zero);
+          expect(audio.page, same(large));
+          expect(audio.finished, isFalse);
+        }
+        player.completionEvents.add(null);
+        await Future<void>.delayed(Duration.zero);
+        expect(audio.finished, isTrue);
+        expect(
+          tts.requests.map((r) => r.text).toSet(),
+          large.speechParts.toSet(),
+        );
+      },
+    );
+
+    test(
       'Pausing and resuming preserve position and do not regenerate audio',
       () async {
         await audio.initialize();
+        await audio.togglePlayback();
         expect(audio.isPlaying, isTrue);
         player.positionEvents.add(const Duration(seconds: 25));
         await audio.togglePlayback();
@@ -190,7 +355,7 @@ void main() {
         expect(audio.position.inSeconds, 25);
         await audio.togglePlayback();
         expect(player.playing, isTrue);
-        expect(tts.requests.length, 1);
+        expect(tts.requests.where((r) => r.text == page(0).text).length, 1);
       },
     );
 
@@ -198,6 +363,7 @@ void main() {
       'The +15 and -5 controls cross fragment boundaries and reuse cached audio',
       () async {
         await audio.initialize();
+        await audio.togglePlayback();
         player.positionEvents.add(const Duration(seconds: 59));
         await audio.skip(const Duration(seconds: 15));
         expect(audio.page!.startCfi, 'cfi-1');
@@ -206,7 +372,7 @@ void main() {
         await audio.skip(const Duration(seconds: -5));
         expect(audio.page!.startCfi, 'cfi-0');
         expect(audio.position.inSeconds, 57);
-        expect(tts.requests.length, 2);
+        expect(tts.requests.where((r) => r.text == page(0).text).length, 1);
         expect(audio.fromCache, isTrue);
         expect(player.playing, isTrue);
       },
@@ -216,6 +382,7 @@ void main() {
       'Changing voice preserves approximate position and paused state',
       () async {
         await audio.initialize();
+        await audio.togglePlayback();
         player.positionEvents.add(const Duration(seconds: 30));
         await audio.togglePlayback();
         player.length = const Duration(seconds: 120);
@@ -227,7 +394,7 @@ void main() {
         player.length = const Duration(seconds: 60);
         await audio.changeVoice(AudioVoice.standard);
         expect(audio.position.inSeconds, 30);
-        expect(tts.requests.length, 2);
+        expect(tts.requests.where((r) => r.text == page(0).text).length, 2);
         expect(audio.fromCache, isTrue);
       },
     );
@@ -237,6 +404,7 @@ void main() {
       () async {
         tts.fail = true;
         await audio.initialize();
+        await audio.togglePlayback();
         expect(audio.error, contains('generar'));
         expect(audio.isPlaying, isFalse);
         tts.fail = false;
@@ -257,6 +425,7 @@ void main() {
         );
         tts.apiKey = '';
         await audio.initialize();
+        await audio.togglePlayback();
         expect(audio.fromCache, isTrue);
         expect(audio.isPlaying, isTrue);
         expect(tts.requests, isEmpty);
@@ -275,7 +444,8 @@ void main() {
       'Closing during generation cancels the request and never starts late playback',
       () async {
         tts.pending = Completer<Uint8List>();
-        final initialized = audio.initialize();
+        await audio.initialize();
+        final initialized = audio.togglePlayback();
         while (tts.requests.isEmpty) {
           await Future<void>.delayed(Duration.zero);
         }
@@ -293,6 +463,7 @@ void main() {
       'Reopening restores local time only at the same EPUB position',
       () async {
         await audio.initialize();
+        await audio.togglePlayback();
         player.positionEvents.add(const Duration(seconds: 23));
         await audio.close();
         final resumed = AudioRucioController(
@@ -303,6 +474,7 @@ void main() {
         );
         await resumed.initialize();
         expect(resumed.position.inSeconds, 23);
+        expect(resumed.isPlaying, isFalse);
         await resumed.close();
         resumed.dispose();
         final elsewhere = AudioRucioController(
@@ -322,6 +494,7 @@ void main() {
       'The end of the book stops playback and rewind works afterwards',
       () async {
         await audio.initialize();
+        await audio.togglePlayback();
         await audio.skip(const Duration(seconds: 180));
         expect(audio.page!.startCfi, 'cfi-2');
         expect(audio.finished, isTrue);
@@ -484,6 +657,9 @@ void main() {
         expect(find.text('Audiorucio'), findsOneWidget);
         expect(find.text('El jardín de los caminos'), findsWidgets);
         expect(find.text('Texto del fragmento 0.'), findsOneWidget);
+        expect(player.playing, isFalse);
+        await tester.tap(find.byIcon(Icons.play_arrow_rounded));
+        await tester.pumpAndSettle();
         expect(player.playing, isTrue);
         Future<void> capture(String path) async {
           if (!preview || size.width != 1280) return;
@@ -519,6 +695,9 @@ void main() {
         await tester.tap(find.text('Cerrar'));
         await tester.pumpAndSettle();
         await tester.tap(find.byTooltip('Volver al libro'));
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
         await tester.pumpAndSettle();
         expect(exited, isTrue);
         await tester.pumpWidget(const SizedBox());

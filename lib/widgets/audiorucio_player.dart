@@ -117,9 +117,9 @@ class AudioRucioPlayer extends ConsumerWidget {
                   children: [
                     IconButton(
                       tooltip: 'Volver al libro',
-                      onPressed: () {
-                        unawaited(audio.close());
-                        onExit();
+                      onPressed: () async {
+                        await audio.close();
+                        if (context.mounted) onExit();
                       },
                       icon: const Icon(Icons.arrow_back_rounded),
                     ),

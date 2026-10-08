@@ -43,7 +43,7 @@
     return parent;
   }
 
-  function extract(section, doc, startRange, maxBytes) {
+  function extract(section, doc, startRange, maxBytes, limitRange) {
     var nodes = textNodes(doc);
     var paragraphs = [];
     var bytes = 0;
@@ -57,7 +57,9 @@
       var start = startRange && startRange.startContainer === node ? startRange.startOffset : 0;
       var endRange = rangeAt(doc, node, node.length, node.length);
       if (startRange && endRange.compareBoundaryPoints(0, startRange) <= 0) continue;
-      var remaining = node.textContent.slice(start);
+      if (limitRange && rangeAt(doc, node, 0, 0).compareBoundaryPoints(0, limitRange) >= 0) break;
+      var end = limitRange && limitRange.startContainer === node ? limitRange.startOffset : node.length;
+      var remaining = node.textContent.slice(start, end);
       var allowed = maxBytes - bytes - 4;
       var length = 0, count = 0;
       for (var char of remaining) {
@@ -147,5 +149,54 @@
     }
     return { read: read };
   }
-  return { create: create, extract: extract };
+  function createVisual(options) {
+    var queue = Promise.resolve();
+    var pages = new Map();
+    async function read(cfi) {
+      if (pages.has(cfi)) return pages.get(cfi);
+      await options.display(cfi);
+      var visited = new Set();
+      while (true) {
+        var location = await options.getLocation();
+        if (!location || !location.start || !location.end) return null;
+        if (visited.has(location.start.cfi)) throw new Error('La paginación no avanza.');
+        visited.add(location.start.cfi);
+        var paragraphs = [];
+        for (var index = location.start.index; index <= location.end.index; index++) {
+          var section = options.book.spine.get(index);
+          if (!section || section.linear === false || section.linear === 'no') continue;
+          var contents = await section.load(options.book.load.bind(options.book));
+          var doc = section.document || contents.ownerDocument || contents;
+          var start = index === location.start.index ? options.toRange(location.start.cfi, doc) : null;
+          var end = index === location.end.index ? options.toRange(location.end.cfi, doc) : null;
+          var extracted = extract(section, doc, start, Infinity, end);
+          if (extracted) paragraphs.push.apply(paragraphs, extracted.paragraphs);
+        }
+        var nextCfi = null;
+        if (!location.atEnd) {
+          await options.next();
+          var next = await options.getLocation();
+          if (next && next.start && next.start.cfi !== location.start.cfi) nextCfi = next.start.cfi;
+        }
+        if (paragraphs.length) {
+          var page = {
+            startCfi: location.start.cfi, endCfi: location.end.cfi,
+            nextCfi: nextCfi, href: location.start.href, paragraphs: paragraphs
+          };
+          pages.set(cfi, page);
+          pages.set(page.startCfi, page);
+          return page;
+        }
+        if (!nextCfi) return null;
+      }
+    }
+    return {
+      read: function(cfi) {
+        var result = queue.then(function() { return read(cfi); });
+        queue = result.catch(function() {});
+        return result;
+      }
+    };
+  }
+  return { create: create, createVisual: createVisual, extract: extract };
 });

@@ -138,7 +138,13 @@ void main() {
       );
       final tts = GoogleTtsService(dio: dio, usage: usage)..apiKey = 'secret';
       final audio = AudioRucioController(
-        session: fixtures.session(),
+        session: AudioSession(
+          userId: 'user',
+          bookId: 'book',
+          initialCfi: 'cfi-2',
+          loadPage: (_) async => fixtures.page(2),
+          onPageChanged: (_) async {},
+        ),
         tts: tts,
         cache: fixtures.MemoryAudioCache(),
         player: fixtures.FakeAudioPlayback(),
@@ -152,7 +158,7 @@ void main() {
       await audio.togglePlayback();
       await audio.changeVoice(AudioVoice.premium);
       await audio.changeVoice(AudioVoice.standard);
-      final length = fixtures.page(0).text.runes.length;
+      final length = fixtures.page(2).text.runes.length;
       expect(calls, 2);
       expect(usage.totals('2026-10', AudioVoice.standard).characters, length);
       expect(usage.totals('2026-10', AudioVoice.premium).characters, length);
@@ -164,6 +170,63 @@ void main() {
         usage.totals('2026-10', AudioVoice.standard).characters,
         length * 2,
       );
+    },
+  );
+
+  test(
+    'Preloaded audio counts once and entering paused has no consumption',
+    () async {
+      final dio = Dio();
+      final texts = <String>[];
+      dio.interceptors.add(
+        InterceptorsWrapper(
+          onRequest: (options, handler) {
+            texts.add(options.data['input']['text'] as String);
+            handler.resolve(
+              Response(
+                requestOptions: options,
+                data: {
+                  'audioContent': base64Encode([1, 2, 3]),
+                },
+              ),
+            );
+          },
+        ),
+      );
+      final player = fixtures.FakeAudioPlayback();
+      final audio = AudioRucioController(
+        session: fixtures.session(),
+        tts: GoogleTtsService(dio: dio, usage: usage)..apiKey = 'fixture',
+        cache: fixtures.MemoryAudioCache(),
+        player: player,
+      );
+      addTearDown(() async {
+        await audio.close();
+        audio.dispose();
+      });
+      await audio.initialize();
+      expect(texts, isEmpty);
+      await audio.togglePlayback();
+      for (
+        var i = 0;
+        i < 100 &&
+            usage.totals('2026-10', AudioVoice.standard).characters <
+                fixtures.page(0).text.runes.length +
+                    fixtures.page(1).text.runes.length;
+        i++
+      ) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      final total =
+          fixtures.page(0).text.runes.length +
+          fixtures.page(1).text.runes.length;
+      expect(texts, [fixtures.page(0).text, fixtures.page(1).text]);
+      expect(usage.totals('2026-10', AudioVoice.standard).characters, total);
+      await audio.togglePlayback();
+      await audio.skip(const Duration(seconds: 61));
+      expect(audio.page!.startCfi, 'cfi-1');
+      expect(texts.length, 2);
+      expect(usage.totals('2026-10', AudioVoice.standard).characters, total);
     },
   );
 

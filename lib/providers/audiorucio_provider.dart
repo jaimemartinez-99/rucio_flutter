@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
@@ -52,14 +53,16 @@ class AudioRucioController extends ChangeNotifier {
         notifyListeners();
       }),
       player.completions.listen((_) {
-        if (!_closed && !_busy && isPlaying) {
-          unawaited(_run(() => _next(autoplay: true)));
+        if (!_closed && isPlaying) {
+          _completionPending = true;
+          _advanceIfCompleted();
         }
       }),
       player.errors.listen((message) {
         if (_closed) return;
         error = message;
         isPlaying = false;
+        _cancelPreload();
         notifyListeners();
       }),
     ]);
@@ -72,6 +75,13 @@ class AudioRucioController extends ChangeNotifier {
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   final List<AudioPage> _history = [];
   int _index = -1;
+  int _part = 0;
+  bool _completionPending = false;
+  int _preloadGeneration = 0;
+  final Map<String, ({Future<File> future, CancelToken token})> _audioJobs = {};
+  Future<AudioPage?>? _nextPage;
+  String? _nextPageCfi;
+  String? _preloadTarget;
   SharedPreferences? _preferences;
   Timer? _saveTimer;
   CancelToken? _cancelToken;
@@ -116,10 +126,7 @@ class AudioRucioController extends ChangeNotifier {
           saved = null;
         }
       }
-      final resumeCfi = saved?['readerCfi'] == session.initialCfi
-          ? (saved?['cfi'] as String?) ?? session.initialCfi
-          : session.initialCfi;
-      final first = await session.loadPage(resumeCfi);
+      final first = await session.loadPage(session.initialCfi);
       if (_closed) return;
       if (first == null) {
         throw const AudioRucioException(
@@ -128,19 +135,19 @@ class AudioRucioController extends ChangeNotifier {
       }
       _history.add(first);
       _index = 0;
-      if (saved?['cfi'] == first.startCfi && saved?['voice'] == voice.name) {
+      if (saved?['cfi'] == first.startCfi &&
+          saved?['textKey'] ==
+              cache.key(session.userId, session.bookId, first.text, voice) &&
+          saved?['voice'] == voice.name) {
+        _part = ((saved?['part'] as num?)?.toInt() ?? 0).clamp(
+          0,
+          first.speechParts.length - 1,
+        );
         position = Duration(
           milliseconds: (saved?['positionMs'] as num?)?.toInt() ?? 0,
         );
       }
       cacheBytes = await cache.sizeBytes();
-      final cached = await cache.find(
-        cache.key(session.userId, session.bookId, first.text, voice),
-      );
-      if (_closed) return;
-      if (tts.isConfigured || cached != null) {
-        await _activate(first, autoplay: true, offset: position);
-      }
     } catch (failure) {
       if (!_closed) error = _message(failure);
     } finally {
@@ -155,6 +162,91 @@ class AudioRucioController extends ChangeNotifier {
       ? failure.message
       : 'No se pudo preparar Audiorucio. Inténtalo de nuevo.';
 
+  void _advanceIfCompleted() {
+    if (_closed || _busy || !isPlaying || !_completionPending) return;
+    _completionPending = false;
+    unawaited(
+      _run(() async {
+        await _next(autoplay: true);
+      }),
+    );
+  }
+
+  Future<AudioPage?> _loadNextPage(String cfi) {
+    if (_nextPageCfi != cfi || _nextPage == null) {
+      _nextPageCfi = cfi;
+      _nextPage = session.loadPage(cfi).catchError((Object failure) {
+        _nextPage = null;
+        throw failure;
+      });
+    }
+    return _nextPage!;
+  }
+
+  Future<File> _generate(
+    String text,
+    AudioVoice selectedVoice,
+    String key,
+    CancelToken token,
+  ) async {
+    final audio = await tts.synthesize(text, selectedVoice, cancelToken: token);
+    if (token.isCancelled) throw token.cancelError!;
+    if (_closed) throw const AudioRucioException('El lector se ha cerrado.');
+    return cache.store(key, audio, protectedPath: _activePath);
+  }
+
+  void _cancelPreload() {
+    _preloadGeneration++;
+    _preloadTarget = null;
+    for (final job in _audioJobs.values) {
+      if (job.token != _cancelToken) job.token.cancel();
+    }
+    _audioJobs.removeWhere((_, job) => job.token != _cancelToken);
+  }
+
+  void _preloadNext() {
+    if (_closed || !isPlaying || page == null) return;
+    final current = page!;
+    final nextPart = _part + 1 < current.speechParts.length ? _part + 1 : 0;
+    final cfi = nextPart > 0 ? current.startCfi : current.nextCfi;
+    if (cfi == null) return;
+    final selectedVoice = voice;
+    final target = '$cfi:$nextPart:${selectedVoice.name}';
+    if (_preloadTarget == target) return;
+    _cancelPreload();
+    _preloadTarget = target;
+    final generation = _preloadGeneration;
+    unawaited(() async {
+      try {
+        final next = nextPart > 0 ? current : await _loadNextPage(cfi);
+        if (_closed || generation != _preloadGeneration || next == null) return;
+        final text = next.speechParts[nextPart];
+        final key = cache.key(
+          session.userId,
+          session.bookId,
+          text,
+          selectedVoice,
+        );
+        if (await cache.find(key) != null || !tts.isConfigured) return;
+        if (_closed || generation != _preloadGeneration) return;
+        final token = CancelToken();
+        final future = _generate(text, selectedVoice, key, token);
+        _audioJobs[key] = (future: future, token: token);
+        try {
+          await future;
+        } finally {
+          if (_audioJobs[key]?.token == token) _audioJobs.remove(key);
+        }
+        if (!_closed) {
+          cacheBytes = await cache.sizeBytes();
+          if (!_closed) notifyListeners();
+        }
+      } catch (_) {
+        if (generation == _preloadGeneration) _preloadTarget = null;
+      }
+    }());
+  }
+
   Future<void> _run(Future<void> Function() action) async {
     if (_busy || _closed) return;
     _busy = true;
@@ -166,6 +258,7 @@ class AudioRucioController extends ChangeNotifier {
       if (!_closed) {
         error = _message(failure);
         isPlaying = false;
+        _cancelPreload();
         try {
           await player.pause();
         } catch (_) {}
@@ -175,6 +268,8 @@ class AudioRucioController extends ChangeNotifier {
         _busy = false;
         _saveSoon();
         notifyListeners();
+        _advanceIfCompleted();
+        if (isPlaying) _preloadNext();
       }
     }
   }
@@ -187,22 +282,25 @@ class AudioRucioController extends ChangeNotifier {
   }) async {
     await player.stop();
     if (_closed) return;
+    _completionPending = false;
     isPlaying = false;
     _loaded = false;
     duration = Duration.zero;
     position = offset;
-    final key = cache.key(session.userId, session.bookId, next.text, voice);
+    final text = next.speechParts[_part];
+    final key = cache.key(session.userId, session.bookId, text, voice);
     var file = await cache.find(key);
     fromCache = file != null;
     if (file == null) {
-      _cancelToken = CancelToken();
-      final audio = await tts.synthesize(
-        next.text,
-        voice,
-        cancelToken: _cancelToken,
-      );
-      if (_closed) return;
-      file = await cache.store(key, audio, protectedPath: _activePath);
+      final job = _audioJobs[key];
+      _cancelToken = job?.token ?? CancelToken();
+      try {
+        file = job == null
+            ? await _generate(text, voice, key, _cancelToken!)
+            : await job.future;
+      } finally {
+        _cancelToken = null;
+      }
     }
     if (_closed) return;
     await player.load(file.path);
@@ -235,9 +333,9 @@ class AudioRucioController extends ChangeNotifier {
     if (_closed) return;
     finished = false;
     if (autoplay) {
+      isPlaying = true;
       await player.resume();
       if (_closed) return;
-      isPlaying = true;
     }
   }
 
@@ -249,8 +347,10 @@ class AudioRucioController extends ChangeNotifier {
       _index = 0;
     }
     if (isPlaying) {
-      await player.pause();
       isPlaying = false;
+      _completionPending = false;
+      _cancelPreload();
+      await player.pause();
     } else if (!_loaded) {
       await _activate(page!, autoplay: true, offset: position);
     } else {
@@ -259,14 +359,17 @@ class AudioRucioController extends ChangeNotifier {
         await player.seek(position);
         finished = false;
       }
-      await player.resume();
       isPlaying = true;
+      await player.resume();
     }
   });
 
   Future<void> changeVoice(AudioVoice nextVoice) => _run(() async {
     if (nextVoice == voice) return;
     final autoplay = isPlaying;
+    final hadAudio = _loaded;
+    _cancelPreload();
+    _completionPending = false;
     final fraction = duration.inMilliseconds > 0
         ? position.inMilliseconds / duration.inMilliseconds
         : 0.0;
@@ -274,14 +377,19 @@ class AudioRucioController extends ChangeNotifier {
     voice = nextVoice;
     _loaded = false;
     await _preferences?.setString('audiorucio.voice', voice.name);
-    if (page != null && (tts.isConfigured || _activePath != null)) {
+    if (page != null && hadAudio) {
       await _activate(page!, autoplay: autoplay, fraction: fraction);
+    } else {
+      position = Duration.zero;
     }
   });
 
   Future<bool> _next({required bool autoplay}) async {
-    if (_index + 1 < _history.length) {
+    if (_part + 1 < page!.speechParts.length) {
+      _part++;
+    } else if (_index + 1 < _history.length) {
       _index++;
+      _part = 0;
     } else {
       final cfi = page?.nextCfi;
       if (cfi == null) {
@@ -290,7 +398,7 @@ class AudioRucioController extends ChangeNotifier {
         position = duration;
         return false;
       }
-      final next = await session.loadPage(cfi);
+      final next = await _loadNextPage(cfi);
       if (_closed) return false;
       if (next == null || next.startCfi == page?.startCfi) {
         finished = true;
@@ -299,6 +407,7 @@ class AudioRucioController extends ChangeNotifier {
       }
       _history.add(next);
       _index++;
+      _part = 0;
     }
     await _activate(page!, autoplay: autoplay);
     return true;
@@ -307,11 +416,17 @@ class AudioRucioController extends ChangeNotifier {
   Future<void> skip(Duration delta) => _run(() async {
     if (!_loaded || page == null) return;
     final autoplay = isPlaying;
+    _completionPending = false;
     await player.pause();
     isPlaying = false;
     var target = position + delta;
-    while (target < Duration.zero && _index > 0) {
-      _index--;
+    while (target < Duration.zero && (_index > 0 || _part > 0)) {
+      if (_part > 0) {
+        _part--;
+      } else {
+        _index--;
+        _part = page!.speechParts.length - 1;
+      }
       await _activate(page!, autoplay: false);
       if (_closed) return;
       target += duration;
@@ -331,8 +446,8 @@ class AudioRucioController extends ChangeNotifier {
     finished = finished && position >= duration;
     await player.seek(position);
     if (autoplay && !finished && !_closed) {
-      await player.resume();
       isPlaying = true;
+      await player.resume();
     }
   });
 
@@ -361,6 +476,7 @@ class AudioRucioController extends ChangeNotifier {
   }
 
   Future<void> clearCache() => _run(() async {
+    _cancelPreload();
     await player.stop();
     isPlaying = false;
     _loaded = false;
@@ -384,6 +500,8 @@ class AudioRucioController extends ChangeNotifier {
         'cfi': page!.startCfi,
         'readerCfi': session.readerCfi?.call() ?? page!.startCfi,
         'voice': voice.name,
+        'textKey': cache.key(session.userId, session.bookId, page!.text, voice),
+        'part': _part,
         'positionMs': position.inMilliseconds,
       }),
     );
@@ -394,6 +512,8 @@ class AudioRucioController extends ChangeNotifier {
   Future<void> _close() async {
     if (_closed) return;
     _closed = true;
+    isPlaying = false;
+    _cancelPreload();
     _cancelToken?.cancel();
     _saveTimer?.cancel();
     for (final subscription in _subscriptions) {

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 enum AudioVoice {
   standard('es-ES-Standard-H', 'Estándar · Standard-H'),
   premium('es-ES-Chirp3-HD-Autonoe', 'Premium · Autonoe');
@@ -44,6 +46,31 @@ class AudioPage {
   final List<AudioParagraph> paragraphs;
 
   String get text => paragraphs.map((paragraph) => paragraph.text).join('\n\n');
+
+  List<String> get speechParts {
+    final parts = <String>[];
+    final buffer = StringBuffer();
+    var bytes = 0;
+    for (final rune in text.runes) {
+      final character = String.fromCharCode(rune);
+      final size = utf8.encode(character).length;
+      if (bytes + size > 4500) {
+        final value = buffer.toString();
+        final boundary = value.lastIndexOf(RegExp(r'\s'));
+        final split = boundary > value.length ~/ 2
+            ? boundary + 1
+            : value.length;
+        parts.add(value.substring(0, split));
+        buffer.clear();
+        buffer.write(value.substring(split));
+        bytes = utf8.encode(buffer.toString()).length;
+      }
+      buffer.write(character);
+      bytes += size;
+    }
+    if (buffer.isNotEmpty) parts.add(buffer.toString());
+    return parts;
+  }
 
   factory AudioPage.fromJson(Map<String, dynamic> json) => AudioPage(
     startCfi: json['startCfi'] as String,

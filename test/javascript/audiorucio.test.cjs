@@ -89,3 +89,39 @@ test('A position at the end of a chapter advances and an invalid CFI fails', asy
   assert.equal(page.paragraphs[0].text, 'Second.');
   await assert.rejects(reader.read('epubcfi(/6/100!/4/2/1:0)'));
 });
+
+test('Visual pages respect both CFI boundaries, inline markup and cross-chapter spreads', async () => {
+  const { sections, book } = fixture(['<p>Before. Hello <em>beautiful</em> world. After.</p>', '<p>Next chapter begins here.</p>']);
+  function position(index, selector, offset) {
+    const doc = sections[index].document;
+    const range = doc.createRange();
+    range.setStart(doc.querySelector(selector).firstChild, offset);
+    range.collapse(true);
+    return { cfi: sections[index].cfiFromRange(range), index, href: sections[index].href };
+  }
+  const locations = [
+    { start: position(0, 'p', 8), end: position(0, 'em', 9), atEnd: false },
+    { start: position(0, 'em', 9), end: position(1, 'p', 12), atEnd: false },
+    { start: position(1, 'p', 12), end: position(1, 'p', 25), atEnd: true }
+  ];
+  let current = 0;
+  const window = new JSDOM('', { runScripts: 'outside-only' }).window;
+  window.eval(epub);
+  const reader = audio.createVisual({
+    book, toRange: (cfi, doc) => new window.ePub.CFI(cfi).toRange(doc),
+    display: async cfi => { current = locations.findIndex(loc => loc.start.cfi === cfi); },
+    next: async () => { current++; }, getLocation: async () => locations[current]
+  });
+  const first = await reader.read(locations[0].start.cfi);
+  assert.equal(first.paragraphs.map(p => p.text).join('\n\n'), 'Hello beautiful');
+  assert.equal(first.startCfi, locations[0].start.cfi);
+  assert.equal(first.endCfi, locations[0].end.cfi);
+  const second = await reader.read(first.nextCfi);
+  assert.equal(second.paragraphs.map(p => p.text).join('\n\n'), 'world. After.\n\nNext chapter');
+  const last = await reader.read(second.nextCfi);
+  assert.equal(last.paragraphs[0].text, 'begins here.');
+  assert.equal(last.nextCfi, null);
+  for (const page of [first, second, last]) {
+    for (const p of page.paragraphs) assert.equal((await book.getRange(p.cfiRange)).toString().trim(), p.text);
+  }
+});
