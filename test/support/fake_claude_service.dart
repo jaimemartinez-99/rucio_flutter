@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:dio/dio.dart';
 import 'package:rucio_flutter/models/claude_mode.dart';
 import 'package:rucio_flutter/models/claude_reading_context.dart';
+import 'package:rucio_flutter/models/claude_retrieval.dart';
 import 'package:rucio_flutter/services/claude_service.dart';
 
 class FakeClaudeService extends ClaudeService {
@@ -11,6 +12,7 @@ class FakeClaudeService extends ClaudeService {
   int inputTokens = 12000;
   bool failPreparation = false;
   Completer<void>? firstPreparation;
+  ClaudeRetrieval? retrieval;
 
   @override
   Future<ClaudePreparedQuestion> prepare(
@@ -35,6 +37,7 @@ class FakeClaudeService extends ClaudeService {
       mode: mode,
       inputTokens: inputTokens,
       request: {},
+      retrieval: retrieval,
     );
   }
 }

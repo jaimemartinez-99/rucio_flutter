@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/claude_provider.dart';
 import '../models/claude_reading_context.dart';
+import '../models/claude_retrieval.dart';
 import '../models/claude_mode.dart';
 import '../providers/claude_mode_provider.dart';
 import '../services/claude_service.dart';
@@ -309,7 +310,7 @@ class _ClaudeChatSheetState extends ConsumerState<ClaudeChatSheet> {
                         ? 'Preparando el texto leído…'
                         : _readingContext == null
                         ? 'No se ha podido preparar el contexto'
-                        : 'Texto leído adjunto · ${_readingContext!.positionSummary}\n${widget.boundaryLabel}',
+                        : 'Texto leído disponible · ${_readingContext!.positionSummary}\n${widget.boundaryLabel}',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
@@ -402,7 +403,7 @@ class _ClaudeChatSheetState extends ConsumerState<ClaudeChatSheet> {
                         Expanded(
                           child: Text(
                             _isEstimating
-                                ? 'Calculando coste…'
+                                ? 'Buscando pasajes y calculando coste…'
                                 : 'Coste pendiente de calcular',
                           ),
                         ),
@@ -427,6 +428,10 @@ class _ClaudeChatSheetState extends ConsumerState<ClaudeChatSheet> {
                           'Con caché nueva; reutilizarla puede reducir el coste.',
                           style: Theme.of(context).textTheme.bodySmall,
                         ),
+                        if (_preparedQuestion!.retrieval != null)
+                          _RetrievedPassages(
+                            retrieval: _preparedQuestion!.retrieval!,
+                          ),
                         if (_preparedQuestion!.usesLongContextPrice)
                           Text(
                             'Haiku aplica tarifa de contexto largo (>100.000 tokens).',
@@ -505,10 +510,62 @@ class _MessageBubble extends StatelessWidget {
             ),
           const SizedBox(height: 8),
           ClaudeUsageSummary(usage: message.usage, model: message.model),
+          if (message.retrieval != null)
+            _RetrievedPassages(retrieval: message.retrieval!)
+          else if (message.sources.isNotEmpty)
+            Text(
+              'Fuentes: ${message.sources.join(' · ')}',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
           if (message.boundaryLabel != null)
             Text(
               message.boundaryLabel!,
               style: Theme.of(context).textTheme.bodySmall,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RetrievedPassages extends StatelessWidget {
+  const _RetrievedPassages({required this.retrieval});
+
+  final ClaudeRetrieval retrieval;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      type: MaterialType.transparency,
+      child: ExpansionTile(
+        tilePadding: EdgeInsets.zero,
+        childrenPadding: const EdgeInsets.only(bottom: 12),
+        title: Text(
+          'Búsqueda local · ${retrieval.passages.length} ${retrieval.passages.length == 1 ? 'pasaje' : 'pasajes'}',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        subtitle: Text(
+          '${retrieval.retrievedCharacters} de ${retrieval.sourceCharacters} caracteres de texto leído',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        children: [
+          for (final passage in retrieval.passages)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    '[${passage.id}] ${passage.label}',
+                    style: Theme.of(context).textTheme.labelMedium,
+                  ),
+                  const SizedBox(height: 4),
+                  SelectableText(
+                    passage.text.trim(),
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
             ),
         ],
       ),

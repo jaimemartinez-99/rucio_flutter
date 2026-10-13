@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rucio_flutter/models/claude_reading_context.dart';
+import 'package:rucio_flutter/models/claude_retrieval.dart';
 import 'package:rucio_flutter/models/claude_usage.dart';
 import 'package:rucio_flutter/models/claude_mode.dart';
 import 'package:rucio_flutter/providers/claude_mode_provider.dart';
@@ -58,6 +59,7 @@ class FakeClaude extends ClaudeNotifier {
           ),
           model: 'claude-sonnet-5',
           boundaryLabel: readingContext.boundaryLabel,
+          retrieval: preparedQuestion?.retrieval,
         ),
       ],
     );
@@ -109,6 +111,45 @@ Future<FakeClaude> openSheet(
 }
 
 void main() {
+  testWidgets(
+    'Retrieved sources are reviewable before sending and remain with the answer',
+    (tester) async {
+      final service = FakeClaudeService()
+        ..retrieval = ClaudeRetrieval(
+          passages: const [
+            ClaudeRetrievedPassage(
+              id: 'F1',
+              sectionIndex: 8,
+              start: 0,
+              end: 47,
+              text: 'Catherine explica su decisión y Heathcliff se va.',
+              chapterNumber: 9,
+            ),
+          ],
+          sourceCharacters: 368858,
+          sourceSections: 20,
+          isComplete: false,
+        );
+      await openSheet(tester, () async => contextFixture, service: service);
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), '¿Por qué se va?');
+      await tester.pump(const Duration(milliseconds: 650));
+      await tester.pumpAndSettle();
+      expect(find.text('Búsqueda local · 1 pasaje'), findsOneWidget);
+      await tester.tap(find.text('Búsqueda local · 1 pasaje'));
+      await tester.pumpAndSettle();
+      expect(find.text('[F1] Capítulo 9'), findsOneWidget);
+      expect(
+        find.text('Catherine explica su decisión y Heathcliff se va.'),
+        findsOneWidget,
+      );
+      await tester.tap(find.byTooltip('Send question'));
+      await tester.pumpAndSettle();
+      expect(find.text('Búsqueda local · 1 pasaje'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets(
     'Economic mode is the default and sending waits for a visible estimate',
     (tester) async {
@@ -246,17 +287,17 @@ void main() {
     expect(notifier.previews.single!.question, 'New question');
   });
 
-  testWidgets('Large economic previews make the higher Haiku tier visible', (
+  testWidgets('RAG previews stay below Haiku long context pricing', (
     tester,
   ) async {
-    final service = FakeClaudeService()..inputTokens = 157641;
+    final service = FakeClaudeService()..inputTokens = 8600;
     await openSheet(tester, () async => contextFixture, service: service);
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), 'Explain this');
     await tester.pump(const Duration(milliseconds: 650));
     await tester.pumpAndSettle();
-    expect(find.textContaining('0,108766 USD'), findsOneWidget);
-    expect(find.textContaining('tarifa de contexto largo'), findsOneWidget);
+    expect(find.textContaining('0,003123 USD'), findsOneWidget);
+    expect(find.textContaining('tarifa de contexto largo'), findsNothing);
   });
 
   for (final width in [390.0, 1280.0]) {
@@ -301,7 +342,7 @@ void main() {
     await tester.tap(find.text('Reintentar'));
     await tester.pumpAndSettle();
     expect(tester.widget<TextField>(find.byType(TextField)).enabled, true);
-    expect(find.textContaining('Texto leído adjunto'), findsOneWidget);
+    expect(find.textContaining('Texto leído disponible'), findsOneWidget);
   });
 
   testWidgets('Keyboard submission cannot duplicate a pending paid question', (

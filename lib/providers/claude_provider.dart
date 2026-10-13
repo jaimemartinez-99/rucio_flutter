@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../config/supabase_client_provider.dart';
 import '../models/claude_reading_context.dart';
+import '../models/claude_retrieval.dart';
 import '../models/claude_usage.dart';
 import '../models/claude_mode.dart';
 import '../services/claude_service.dart';
@@ -17,6 +18,8 @@ class ClaudeMessage {
   final String? cutoffCfi;
   final String? boundaryLabel;
   final String? warning;
+  final ClaudeRetrieval? retrieval;
+  final List<String> sources;
 
   const ClaudeMessage({
     required this.question,
@@ -28,12 +31,16 @@ class ClaudeMessage {
     this.cutoffCfi,
     this.boundaryLabel,
     this.warning,
+    this.retrieval,
+    this.sources = const [],
   });
 
   factory ClaudeMessage.fromJson(Map<String, dynamic> json) {
     final metadata = json['metadata'] is Map
         ? json['metadata'] as Map
         : const {};
+    final retrieval = metadata['retrieval'];
+    final passages = retrieval is Map ? retrieval['passages'] : null;
     return ClaudeMessage(
       question: json['question'] as String,
       answer: json['answer'] as String,
@@ -44,6 +51,14 @@ class ClaudeMessage {
       cutoffCfi: metadata['cutoff_cfi'] as String?,
       boundaryLabel: metadata['boundary_label'] as String?,
       warning: metadata['warning'] as String?,
+      sources: [
+        if (passages is List)
+          for (final passage in passages)
+            if (passage is Map &&
+                passage['id'] is String &&
+                passage['section_index'] is int)
+              '[${passage['id']}] ${passage['chapter_number'] is int ? 'Capítulo ${passage['chapter_number']}' : 'Sección ${(passage['section_index'] as int) + 1}'}',
+      ],
     );
   }
 }
@@ -161,6 +176,7 @@ class ClaudeNotifier extends StateNotifier<ClaudeState> {
         cutoffCfi: readingContext.cutoffCfi,
         boundaryLabel: readingContext.boundaryLabel,
         warning: response.warning,
+        retrieval: response.retrieval,
       );
 
       if (mounted && generation == _viewGeneration) {
@@ -192,6 +208,7 @@ class ClaudeNotifier extends StateNotifier<ClaudeState> {
             'reading_mode': mode.name,
             'estimated_input_tokens': preparedQuestion?.inputTokens,
             'estimated_max_usd': preparedQuestion?.estimatedMaxUsd,
+            'retrieval': response.retrieval?.metadata,
           },
         });
       } catch (_) {

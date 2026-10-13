@@ -67,6 +67,13 @@ void main() {
           anyOf(contains('degrad'), contains('humill'), contains('rechaz')),
         );
         expect(response.usage, isNotNull);
+        expect(response.usage!.totalInputTokens, lessThanOrEqualTo(12000));
+        expect(response.retrieval, isNotNull);
+        expect(response.retrieval!.isComplete, false);
+        expect(
+          response.retrieval!.retrievedCharacters,
+          lessThanOrEqualTo(20000),
+        );
       }
     },
     skip: !const bool.fromEnvironment('RUN_CLAUDE_BOOK_TEST') || path.isEmpty,

@@ -40,12 +40,14 @@ class ClaudeReadingContext {
   final int? chapterNumber;
   final int? spineIndex;
 
-  String get positionSummary => [
+  String get readingPosition => [
     if (chapterNumber != null) 'Capítulo $chapterNumber',
     if (percentage != null) '${percentage!.toStringAsFixed(0)}% leído',
     if (chapterNumber == null && percentage == null) location,
-    '${sections.length} secciones adjuntas',
   ].join(' · ');
+
+  String get positionSummary =>
+      '$readingPosition · ${sections.length} secciones disponibles';
 
   Map<String, dynamic> get metadata => {
     'cutoff_cfi': cutoffCfi,

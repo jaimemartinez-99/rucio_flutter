@@ -12,6 +12,7 @@ import 'package:rucio_flutter/services/claude_service.dart';
 class RecordingAdapter implements HttpClientAdapter {
   final requests = <Map<String, dynamic>>[];
   int count = 12000;
+  final counts = <int>[];
   int status = 200;
   Map<String, dynamic> response = {
     'model': 'claude-haiku-5-5',
@@ -41,7 +42,7 @@ class RecordingAdapter implements HttpClientAdapter {
     return ResponseBody.fromString(
       jsonEncode(
         options.path.endsWith('/count_tokens')
-            ? {'input_tokens': count}
+            ? {'input_tokens': counts.isEmpty ? count : counts.removeAt(0)}
             : response,
       ),
       options.path.endsWith('/count_tokens') ? 200 : status,
@@ -185,9 +186,9 @@ void main() {
   );
 
   test(
-    'A large preview uses Haiku long context rates and preserves all provided text',
+    'A preview exceeding the RAG token budget is re-counted before a paid request',
     () async {
-      final adapter = RecordingAdapter()..count = 157641;
+      final adapter = RecordingAdapter()..counts.addAll([13000, 9000]);
       final service = ClaudeService(
         dio: Dio()..httpClientAdapter = adapter,
         apiKey: 'test-key',
@@ -197,11 +198,13 @@ void main() {
         null,
         readingContext: readingContext,
       );
-      expect(prepared.usesLongContextPrice, true);
-      expect(prepared.estimatedMaxUsd, closeTo(0.108765625, 1e-10));
+      expect(adapter.requests, hasLength(2));
+      expect(prepared.usesLongContextPrice, false);
+      expect(prepared.inputTokens, 9000);
+      expect(prepared.estimatedMaxUsd, closeTo(0.003173, 1e-10));
       expect(prepared.readingContext, same(readingContext));
       expect(
-        adapter.requests.single['messages'].toString(),
+        adapter.requests.last['messages'].toString(),
         contains('Already read &lt;only&gt;.'),
       );
     },
@@ -233,12 +236,123 @@ void main() {
       expect(blocks.first['cache_control'], {'type': 'ephemeral'});
       expect(blocks.last['text'], contains('verified_reading_position'));
       expect(blocks.last['text'], isNot(contains(readingContext.cutoffCfi)));
-      expect(blocks.first['text'], contains('already_read_text'));
+      expect(blocks.first['text'], contains('retrieved_read_passages'));
+      expect(request['system'], contains('Missing evidence does NOT mean'));
+      expect(result.retrieval!.passages.single.id, 'F1');
       expect(request['system'], contains('CURRENT PAGE'));
       expect(result.answer, 'Supported answer.');
       expect(result.usage!.totalInputTokens, 12120);
       expect(result.usage!.totalTokens, 12620);
       expect(result.usage!.estimatedUsd, closeTo(0.000382, 1e-10));
+    },
+  );
+
+  test(
+    'A large book sends only retrieved scenes and persists source references without book text',
+    () async {
+      final context = ClaudeReadingContext(
+        cutoffCfi: readingContext.cutoffCfi,
+        sections: [
+          ClaudeContextSection(
+            href: 'future-revealing-name.xhtml',
+            text: List.filled(
+              300,
+              'El viajero recorría el campo y observaba la lluvia junto al camino.',
+            ).join('\n\n'),
+          ),
+          const ClaudeContextSection(
+            href: 'nine.xhtml',
+            text:
+                'CAPÍTULO IX\n\nCatherine dijo que casarse con Heathcliff la degradaría. Él la escuchó y se marchó antes de oír su confesión de amor.',
+          ),
+          const ClaudeContextSection(
+            href: 'current.xhtml',
+            text: 'La tarde terminó en calma.',
+            isCurrent: true,
+          ),
+        ],
+        location: '52% leído',
+        boundaryLabel: readingContext.boundaryLabel,
+        chapterNumber: 17,
+        percentage: 52,
+      );
+      final adapter = RecordingAdapter()..count = 8500;
+      final service = ClaudeService(
+        dio: Dio()..httpClientAdapter = adapter,
+        apiKey: 'test-key',
+      );
+      final result = await service.ask(
+        '¿Por qué huye Heathcliff?',
+        null,
+        readingContext: context,
+      );
+      final prompt = adapter.requests.last['messages'].toString();
+      expect(prompt, contains('la degradaría'));
+      expect(prompt, isNot(contains('future-revealing-name')));
+      expect(result.retrieval!.isComplete, false);
+      expect(
+        result.retrieval!.retrievedCharacters,
+        lessThan(context.sections.first.text.length),
+      );
+      expect(adapter.requests, hasLength(2));
+      final history = ClaudeMessage.fromJson({
+        'question': 'Pregunta',
+        'answer': 'Respuesta [F1]',
+        'created_at': '2026-10-13T12:00:00Z',
+        'metadata': {'retrieval': result.retrieval!.metadata},
+      });
+      expect(
+        history.sources.any((source) => source.contains('Capítulo 9')),
+        true,
+      );
+      expect(
+        jsonEncode(result.retrieval!.metadata),
+        isNot(contains('la degradaría')),
+      );
+    },
+  );
+
+  test(
+    'A cancelled local preparation never sends a token count or generation',
+    () async {
+      final adapter = RecordingAdapter();
+      final service = ClaudeService(
+        dio: Dio()..httpClientAdapter = adapter,
+        apiKey: 'test-key',
+      );
+      final cancel = CancelToken()..cancel();
+      await expectLater(
+        service.prepare(
+          'Question',
+          null,
+          readingContext: readingContext,
+          cancelToken: cancel,
+        ),
+        throwsA(isA<ClaudeServiceException>()),
+      );
+      expect(adapter.requests, isEmpty);
+    },
+  );
+
+  test(
+    'An empty verified prefix does not send a question without evidence',
+    () async {
+      final adapter = RecordingAdapter();
+      final service = ClaudeService(
+        dio: Dio()..httpClientAdapter = adapter,
+        apiKey: 'test-key',
+      );
+      const context = ClaudeReadingContext(
+        cutoffCfi: 'epubcfi(/6/2!/4/2/1:0)',
+        sections: [],
+        location: 'Capítulo 1',
+        boundaryLabel: 'Inicio de página',
+      );
+      await expectLater(
+        service.ask('Question', null, readingContext: context),
+        throwsA(isA<ClaudeServiceException>()),
+      );
+      expect(adapter.requests, isEmpty);
     },
   );
 
