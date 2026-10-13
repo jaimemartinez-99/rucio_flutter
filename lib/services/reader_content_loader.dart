@@ -68,13 +68,15 @@ class ReaderContentLoader {
       rootBundle.loadString('assets/epubjs/footnotes.js'),
       rootBundle.loadString('assets/epubjs/audiorucio.js'),
       rootBundle.loadString('assets/epubjs/navigation.js'),
+      rootBundle.loadString('assets/epubjs/claude_context.js'),
     ]);
     var html = sources[0]
         .replaceFirst('{{{JSZIP_SOURCE}}}', sources[1])
         .replaceFirst('{{{EPUBJS_SOURCE}}}', sources[2])
         .replaceFirst('{{{FOOTNOTES_SOURCE}}}', sources[3])
         .replaceFirst('{{{AUDIORUCIO_SOURCE}}}', sources[4])
-        .replaceFirst('{{{NAVIGATION_SOURCE}}}', sources[5]);
+        .replaceFirst('{{{NAVIGATION_SOURCE}}}', sources[5])
+        .replaceFirst('{{{CLAUDE_CONTEXT_SOURCE}}}', sources[6]);
     final local = await _cache.serveEpub(epubPath);
     html = html
         .replaceFirst('{{{EPUB_URL_JSON}}}', jsonEncode(local.url))

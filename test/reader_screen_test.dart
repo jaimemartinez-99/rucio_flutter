@@ -7,18 +7,26 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:rucio_flutter/models/highlight.dart';
+import 'package:rucio_flutter/models/claude_reading_context.dart';
+import 'package:rucio_flutter/providers/claude_provider.dart';
 import 'package:rucio_flutter/providers/highlights_provider.dart';
 import 'package:rucio_flutter/providers/notes_provider.dart';
 import 'package:rucio_flutter/providers/progress_provider.dart';
 import 'package:rucio_flutter/screens/reader_screen.dart';
 import 'package:rucio_flutter/services/reader_content_loader.dart';
 import 'package:rucio_flutter/services/reader_webview.dart';
+import 'package:rucio_flutter/widgets/claude_chat_sheet.dart';
+import 'package:rucio_flutter/models/claude_mode.dart';
+import 'package:rucio_flutter/services/claude_service.dart';
+import 'support/fake_claude_service.dart';
 
 class FakeReaderWebView implements ReaderWebView {
   final events = StreamController<ReaderWebMessage>.broadcast(sync: true);
   final failures = StreamController<String>.broadcast(sync: true);
   final scripts = <String>[];
   bool disposed = false;
+  Map<String, dynamic>? claudeContext;
+  String? claudeError;
 
   @override
   Stream<ReaderWebMessage> get messages => events.stream;
@@ -35,7 +43,24 @@ class FakeReaderWebView implements ReaderWebView {
   }
 
   @override
-  Future<void> runJavaScript(String script) async => scripts.add(script);
+  Future<void> runJavaScript(String script) async {
+    scripts.add(script);
+    final request = RegExp(r'^requestClaudeContext\((\d+),').firstMatch(script);
+    if (request != null && (claudeContext != null || claudeError != null)) {
+      events.add(
+        ReaderWebMessage(
+          'ClaudeContext',
+          jsonEncode({
+            'requestId': int.parse(request.group(1)!),
+            if (claudeError != null)
+              'error': claudeError
+            else
+              'context': claudeContext,
+          }),
+        ),
+      );
+    }
+  }
 
   @override
   Widget buildView() => const SizedBox.expand(key: Key('reader-webview'));
@@ -108,6 +133,23 @@ class FakeProgress extends ProgressNotifier {
   Future<void> flushProgress() async {}
 }
 
+class RecordingClaude extends ClaudeNotifier {
+  RecordingClaude(super.ref, super.bookId);
+
+  ClaudeReadingContext? context;
+
+  @override
+  Future<void> askQuestion(
+    String? selectedText,
+    String question, {
+    required ClaudeReadingContext readingContext,
+    ClaudeReadingMode mode = ClaudeReadingMode.economical,
+    ClaudePreparedQuestion? preparedQuestion,
+  }) async {
+    context = readingContext;
+  }
+}
+
 Future<RecordingHighlights> openReader(
   WidgetTester tester,
   FakeReaderWebView view,
@@ -122,6 +164,7 @@ Future<RecordingHighlights> openReader(
   await tester.pumpWidget(
     ProviderScope(
       overrides: [
+        claudeServiceProvider.overrideWithValue(FakeClaudeService()),
         readerContentLoaderProvider.overrideWithValue(FakeContentLoader()),
         readerWebViewFactoryProvider.overrideWithValue(() => view),
         bookHighlightsProvider.overrideWith(
@@ -129,6 +172,9 @@ Future<RecordingHighlights> openReader(
         ),
         bookNotesProvider.overrideWith((ref, bookId) => FakeNotes(ref)),
         progressProvider.overrideWith((ref, bookId) => FakeProgress(ref)),
+        claudeProvider.overrideWith(
+          (ref, bookId) => RecordingClaude(ref, bookId),
+        ),
       ],
       child: const MaterialApp(home: ReaderScreen(bookId: 'book')),
     ),
@@ -138,6 +184,111 @@ Future<RecordingHighlights> openReader(
 }
 
 void main() {
+  testWidgets(
+    'Claude selection preserves its range and receives the extracted prefix',
+    (tester) async {
+      final view = FakeReaderWebView()
+        ..claudeContext = {
+          'cutoffCfi': 'epubcfi(/6/2!/4/2/1:9)',
+          'sections': [
+            {'href': 'one.xhtml', 'text': 'A passage', 'isCurrent': true},
+          ],
+        };
+      await openReader(tester, view, const Size(390, 844));
+      view.scripts.clear();
+      view.select('claude');
+      await tester.pumpAndSettle();
+      expect(
+        view.scripts.single,
+        'requestClaudeContext(1, "epubcfi(/6/2!/4/2:0,/1:0,/1:9)")',
+      );
+      expect(
+        find.textContaining('Hasta el final del fragmento seleccionado'),
+        findsOneWidget,
+      );
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(ClaudeChatSheet),
+          matching: find.byType(TextField),
+        ),
+        'Explain this',
+      );
+      await tester.pump(const Duration(milliseconds: 650));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Send question'));
+      await tester.pumpAndSettle();
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(ReaderScreen)),
+      );
+      final notifier =
+          container.read(claudeProvider('book').notifier) as RecordingClaude;
+      expect(notifier.context!.cutoffCfi, view.claudeContext!['cutoffCfi']);
+      expect(notifier.context!.sections.single.text, 'A passage');
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('Claude opened from the toolbar uses the current page start', (
+    tester,
+  ) async {
+    final view = FakeReaderWebView()
+      ..claudeContext = {
+        'cutoffCfi': 'epubcfi(/6/2!/4/2/1:5)',
+        'sections': <dynamic>[],
+        'chapterNumber': 17,
+        'spineIndex': 21,
+        'percentage': 52,
+      };
+    await openReader(tester, view, const Size(1280, 800));
+    view.events.add(
+      ReaderWebMessage(
+        'Relocated',
+        jsonEncode({
+          'cfi': 'epubcfi(/6/2!/4/2/1:5)',
+          'href': 'one.xhtml',
+          'percentage': 52,
+        }),
+      ),
+    );
+    view.scripts.clear();
+    await tester.tap(find.byTooltip('Herramientas de lectura'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Historial de Claude'));
+    await tester.pumpAndSettle();
+    expect(
+      view.scripts.single,
+      'requestClaudeContext(1, "epubcfi(/6/2!/4/2/1:5)")',
+    );
+    expect(
+      find.textContaining('Hasta el inicio de la página actual'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Capítulo 17 · 52% leído'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('A reader extraction failure blocks the Claude question', (
+    tester,
+  ) async {
+    final view = FakeReaderWebView()..claudeError = 'Invalid position';
+    await openReader(tester, view, const Size(390, 844));
+    view.select('claude');
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<TextField>(
+            find.descendant(
+              of: find.byType(ClaudeChatSheet),
+              matching: find.byType(TextField),
+            ),
+          )
+          .enabled,
+      false,
+    );
+    expect(find.textContaining('Invalid position'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   for (final size in [const Size(390, 844), const Size(1280, 800)]) {
     testWidgets(
       'EPUB footnotes open without moving the reader at width ${size.width}',

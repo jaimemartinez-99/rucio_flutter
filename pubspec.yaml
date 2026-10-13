@@ -88,6 +88,7 @@ flutter:
     - assets/epubjs/footnotes.js
     - assets/epubjs/audiorucio.js
     - assets/epubjs/navigation.js
+    - assets/epubjs/claude_context.js
     - assets/translation/translate.py
 
   # To add assets to your application, add an assets section, like this:

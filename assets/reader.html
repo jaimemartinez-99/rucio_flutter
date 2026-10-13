@@ -29,6 +29,7 @@
   <script>{{{FOOTNOTES_SOURCE}}}</script>
   <script>{{{AUDIORUCIO_SOURCE}}}</script>
   <script>{{{NAVIGATION_SOURCE}}}</script>
+  <script>{{{CLAUDE_CONTEXT_SOURCE}}}</script>
   <script>
     var book, rendition;
     var readerReady = false;
@@ -404,6 +405,19 @@
     function highlightSelection() { sendSelectionAction('highlight'); }
     function addNoteSelection() { sendSelectionAction('note'); }
     function askClaudeSelection() { sendSelectionAction('claude'); }
+    var claudeContextReader;
+    async function requestClaudeContext(requestId, cfi) {
+      try {
+        if (!claudeContextReader) claudeContextReader = RucioClaudeContext.create({
+          book: book,
+          CFI: ePub.CFI
+        });
+        var context = await claudeContextReader.read(cfi);
+        postToFlutter('ClaudeContext', JSON.stringify({ requestId: requestId, context: context }));
+      } catch (error) {
+        postToFlutter('ClaudeContext', JSON.stringify({ requestId: requestId, error: error.message || 'No se pudo extraer el texto leído.' }));
+      }
+    }
     function translateSelection() { sendSelectionAction('translate'); }
     function saveToVocablingoSelection() { sendSelectionAction('vocablingo'); }
     function dismissSelection() {

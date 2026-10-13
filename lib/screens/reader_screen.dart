@@ -10,6 +10,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/epub_footnote.dart';
 import '../models/audio_page.dart';
+import '../models/claude_reading_context.dart';
 import '../providers/audiorucio_provider.dart';
 import '../providers/highlights_provider.dart';
 import '../providers/notes_provider.dart';
@@ -51,7 +52,6 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   Duration _sessionReadingTime = Duration.zero;
   double _progress = 0;
   String? _currentCfi;
-  String? _currentHref;
   List<TocItem> _tocItems = [];
   bool _isLoading = true;
   String? _loadError;
@@ -69,6 +69,8 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   Size? _audioReaderSize;
   int _audioRequestId = 0;
   final Map<int, Completer<AudioPage?>> _audioRequests = {};
+  int _claudeRequestId = 0;
+  final Map<int, Completer<Map<String, dynamic>>> _claudeRequests = {};
   late final AppLifecycleListener _audioLifecycle;
   bool _appInForeground = true;
 
@@ -134,6 +136,21 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     try {
       final message = event.message;
       switch (event.channel) {
+        case 'ClaudeContext':
+          final data = jsonDecode(message) as Map<String, dynamic>;
+          final request = _claudeRequests.remove(data['requestId']);
+          if (request == null) return;
+          if (data['error'] is String) {
+            request.completeError(StateError(data['error'] as String));
+          } else {
+            try {
+              request.complete(data['context'] as Map<String, dynamic>);
+            } catch (_) {
+              request.completeError(
+                StateError('No se pudo obtener el texto leído.'),
+              );
+            }
+          }
         case 'AudioPage':
           final data = jsonDecode(message) as Map<String, dynamic>;
           final request = _audioRequests.remove(data['requestId']);
@@ -160,7 +177,6 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
           final percentage = (data['percentage'] as num?)?.toDouble() ?? 0;
           setState(() {
             _currentCfi = cfi;
-            _currentHref = data['href'] as String?;
             _progress = percentage;
           });
           _progressNotifier.saveProgress(cfi, percentage);
@@ -271,7 +287,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
         case 'note':
           if (cfi != null && cfi.isNotEmpty) await _createNote(cfi, text);
         case 'claude':
-          _showClaudeChat(text);
+          _showClaudeChat(text, selectedCfi: cfi);
         case 'translate':
           _showTranslation(text);
         case 'vocablingo':
@@ -426,7 +442,13 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     );
   }
 
-  void _showClaudeChat(String? selectedText) {
+  void _showClaudeChat(String? selectedText, {String? selectedCfi}) {
+    final cutoff = selectedCfi ?? _currentCfi;
+    final location = _claudeReadingContext;
+    final percentage = _progress;
+    final boundary = selectedCfi == null
+        ? 'Hasta el inicio de la página actual'
+        : 'Hasta el final del fragmento seleccionado';
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -438,36 +460,77 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
         builder: (ctx, scrollController) => ClaudeChatSheet(
           bookId: widget.bookId,
           selectedText: selectedText,
-          readingContext: _claudeReadingContext,
+          loadReadingContext: () =>
+              _requestClaudeContext(cutoff, location, boundary, percentage),
+          boundaryLabel: boundary,
+          scrollController: scrollController,
         ),
       ),
     );
   }
 
-  String get _claudeReadingContext {
-    final chapter = _chapterLabelForHref(_currentHref);
-    final progress = _progress.toStringAsFixed(0);
-    return chapter == null
-        ? 'approximately $progress% of the book'
-        : 'chapter "$chapter", approximately $progress% of the book';
+  Future<ClaudeReadingContext> _requestClaudeContext(
+    String? cfi,
+    String location,
+    String boundary,
+    double capturedPercentage,
+  ) async {
+    final controller = _webViewController;
+    if (!mounted || controller == null || cfi == null || cfi.isEmpty) {
+      throw StateError(
+        'No se pudo determinar la posición de lectura. La consulta no se ha enviado.',
+      );
+    }
+    final id = ++_claudeRequestId;
+    final request = Completer<Map<String, dynamic>>();
+    _claudeRequests[id] = request;
+    try {
+      final response = request.future.timeout(const Duration(seconds: 60));
+      unawaited(
+        controller
+            .runJavaScript('requestClaudeContext($id, ${jsonEncode(cfi)})')
+            .catchError((Object error) {
+              if (!request.isCompleted) {
+                request.completeError(
+                  StateError('No se pudo extraer el texto leído.'),
+                );
+              }
+            }),
+      );
+      final data = await response;
+      final book = _readerContent?.book;
+      final extractedPercentage = (data['percentage'] as num?)?.toDouble();
+      final spineIndex = data['spineIndex'] as int?;
+      final percentage =
+          extractedPercentage ??
+          (capturedPercentage > 0 || spineIndex == 0
+              ? capturedPercentage
+              : null);
+      return ClaudeReadingContext(
+        cutoffCfi: data['cutoffCfi'] as String,
+        sections: (data['sections'] as List)
+            .map(
+              (section) => ClaudeContextSection.fromJson(
+                section as Map<String, dynamic>,
+              ),
+            )
+            .toList(growable: false),
+        location: location,
+        boundaryLabel: boundary,
+        title: book?.title,
+        author: book?.author,
+        percentage: percentage,
+        chapterNumber: data['chapterNumber'] as int?,
+        spineIndex: spineIndex,
+      );
+    } finally {
+      _claudeRequests.remove(id);
+    }
   }
 
-  String? _chapterLabelForHref(String? href) {
-    if (href == null || href.isEmpty) return null;
-    final normalizedHref = href.split('#').first;
-    TocItem? match;
-
-    void visit(List<TocItem> items) {
-      for (final item in items) {
-        if (item.href.split('#').first == normalizedHref) {
-          match = item;
-        }
-        visit(item.children);
-      }
-    }
-
-    visit(_tocItems);
-    return match?.label.isNotEmpty == true ? match!.label : null;
+  String get _claudeReadingContext {
+    final progress = _progress.toStringAsFixed(0);
+    return 'approximately $progress% of the book';
   }
 
   void _showTranslation(String selectedText) {
@@ -630,7 +693,6 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
           if (mounted) {
             setState(() {
               _currentCfi = page.startCfi;
-              _currentHref = page.href;
               _progress = page.percentage ?? _progress;
             });
             _progressNotifier.saveProgress(page.startCfi, _progress);
@@ -718,6 +780,12 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   @override
   void dispose() {
     _audioLifecycle.dispose();
+    for (final request in _claudeRequests.values) {
+      if (!request.isCompleted) {
+        request.completeError(StateError('El lector se ha cerrado.'));
+      }
+    }
+    _claudeRequests.clear();
     for (final request in _audioRequests.values) {
       if (!request.isCompleted) request.complete(null);
     }
